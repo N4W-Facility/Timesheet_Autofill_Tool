@@ -87,6 +87,12 @@ def show_progress_window(max_value):
 def hide_progress_window():
     progress_window.destroy()
 
+def readDataBase(filepath):
+    df1 = pd.read_excel(filepath, sheet_name='TNC-Employee')
+    df2 = pd.read_excel(filepath, sheet_name='N4W-Projects')
+    df3 = pd.read_excel(filepath, sheet_name='TNC-Projects')
+    return pd.concat([df1, df2, df3], ignore_index=True)
+
 # ----------------------------------------------------------------------------------------------------------------------
 # Update categories
 # ----------------------------------------------------------------------------------------------------------------------
@@ -94,7 +100,7 @@ def hide_progress_window():
 def update_categories(filepath):
     try:
         # Leer el archivo Excel
-        df = pd.read_excel(filepath)
+        df = readDataBase(filepath)
         df = df.dropna(subset=['Pegasys ID']).fillna(0)
 
         # Verificar si existen las columnas necesarias
@@ -133,10 +139,10 @@ def update_categories(filepath):
 
         # Ocultar la ventana de progreso
         hide_progress_window()
-        messagebox.showinfo("Finalizado", "Actualización de categorías completada.")
+        messagebox.showinfo("Completed", "Category update completed.")
     except Exception as e:
         hide_progress_window()
-        messagebox.showerror("Error", f"Error al actualizar categorías: {e}")
+        messagebox.showerror("Error", f"Error updating categories: {e}")
 
 # Función para ejecutar el proceso en un hilo separado
 def run_update_categories(filepath):
@@ -241,7 +247,7 @@ def generate_report():
         report.index    = [texto.split('|')[0].strip() for texto in report.index.values]
 
         # Leer códigos del N4W Facility
-        N4WCodes = pd.read_excel(NameDataBase)
+        N4WCodes = readDataBase(NameDataBase)
         N4WCodes = N4WCodes.dropna(subset=['Pegasys ID']).fillna(0).replace('XXXXXX', 0)
         N4WCodes['Activity ID'] = N4WCodes['Activity ID'].astype(int)
         N4WCodes['Project ID'] = N4WCodes['Project ID'].astype(str)
