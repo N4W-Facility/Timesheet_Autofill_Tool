@@ -44,6 +44,7 @@ import pandas as pd
 import win32com.client
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkcalendar import DateEntry
 import win32com.client
 import threading
 import time
@@ -208,13 +209,15 @@ def process_category(category):
 # Función principal para generar el reporte
 def generate_report():
     try:
-        year        = int(year_dropdown.get())
-        month       = int(month_dropdown.get())
-        NameDataBase= ProjectsDataBase.get()
+        # Obtener las fechas seleccionadas
+        start_date = datetime.strptime(start_date_entry.get(), '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_entry.get(), '%Y-%m-%d')
+        NameDataBase = ProjectsDataBase.get()
 
-        # Fechas de inicio y fin del mes
-        start_date = dt.datetime(year, month, 1)
-        end_date = dt.datetime(year, month, calendar.monthrange(year, month)[1])
+        # Validar que la fecha de inicio sea menor o igual a la de finalización
+        if start_date > end_date:
+            messagebox.showerror("Error", "Start date cannot be after end date.")
+            return
 
         # Cargar datos del calendario sin filtrar por palabra clave
         raw_data = get_calendar(start_date, end_date)
@@ -298,7 +301,7 @@ def generate_report():
         Value['Earning'] = Value['Earning'].map(mapping)
 
         # Crear carpeta para guardar resultados
-        output_folder = os.path.join(ruta_directorio,f'{year}-{month:02}')
+        output_folder = os.path.join(ruta_directorio)
         create_folder(output_folder)
 
         # Guardar resultados
@@ -318,34 +321,10 @@ def select_file(entry_field):
         entry_field.delete(0, tk.END)
         entry_field.insert(0, filepath)
 
-
-# Función para leer reuniones
-def read_meetings(year, month):
-    try:
-        outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-        calendar = outlook.GetDefaultFolder(9).Items
-        calendar.IncludeRecurrences = True
-        calendar.Sort("[Start]")
-
-        start_date = pd.Timestamp(year=int(year), month=int(month), day=1)
-        end_date = start_date + pd.offsets.MonthEnd(1)
-
-        restriction = f"[Start] >= '{start_date.strftime('%d/%m/%Y')}' AND [End] <= '{end_date.strftime('%d/%m/%Y')}'"
-        appointments = calendar.Restrict(restriction)
-
-        for app in appointments:
-            print(f"{app.Start}: {app.Subject} ({app.Categories})")
-
-        messagebox.showinfo("Finalizado", "Lectura de reuniones completada.")
-    except Exception as e:
-        messagebox.showerror("Error", f"Error al leer reuniones: {e}")
-
 # Función para Fill_Deltek
 def fill_deltek():
     try:
         PoPo        = int(Posi_entry_deltek.get())
-        year        = int(year_dropdown.get())
-        month       = int(month_dropdown.get())
         LoginID     = email_entry_deltek.get()
         Password    = password_entry_deltek.get()
         Domain      = 'TNC.ORG'
@@ -356,7 +335,7 @@ def fill_deltek():
         # ----------------------------------------------------------------------------------------------------------------------
         ruta_directorio = os.path.dirname(NameDataBase)
         # Leer códigos del N4W Facility
-        output_folder = os.path.join(ruta_directorio,f'{year}-{month:02}')
+        output_folder = os.path.join(ruta_directorio)
         Value = pd.read_csv(os.path.join(output_folder, '02-Deltek.csv'), index_col=0)
         Value = Value.groupby(['Project ID', 'Activity ID', 'Award ID','Earning'], as_index=False).sum()
         Deltek_Data = Value[['Project ID', 'Activity ID', 'Award ID','Earning']]
@@ -415,40 +394,57 @@ def fill_deltek():
         # ----------------------------------------------------------------------------------------------------------------------
         # 4. Navegar a la segunda página
         #driver.get("https://tnc.hostedaccess.com/DeltekTC/TimeCollection.msv")
-
-        JoJo = 0
-        for i in range(PoPo, Deltek_Data["Project ID"].size):
+        """
+        Book = Book_deltek.get()
+        """
+        for i in range(0, Deltek_Data["Project ID"].size):
             # Project ID
-            WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.ID, "udt" + str(i) + "_1"))).click()
+            WebDriverWait(driver, Ntime).until(
+                EC.element_to_be_clickable((By.ID, "udt" + str(i + PoPo) + "_1"))).click()
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
                 Deltek_Data["Project ID"][i])
 
             # GeoOrigen
-            WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.ID, "udt" + str(i) + "_3"))).click()
+            WebDriverWait(driver, Ntime).until(
+                EC.element_to_be_clickable((By.ID, "udt" + str(i + PoPo) + "_3"))).click()
 
             # Award ID
-            WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.ID, "udt" + str(i) + "_4"))).click()
+            WebDriverWait(driver, Ntime).until(
+                EC.element_to_be_clickable((By.ID, "udt" + str(i + PoPo) + "_4"))).click()
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).clear()
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
                 str(Deltek_Data["Award ID"][i]))
 
             # Activity
-            WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.ID, "udt" + str(i) + "_5"))).click()
+            WebDriverWait(driver, Ntime).until(
+                EC.element_to_be_clickable((By.ID, "udt" + str(i + PoPo) + "_5"))).click()
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).clear()
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
                 str(Deltek_Data["Activity ID"][i]))
             time.sleep(0.1)
 
             # Indicador
-            WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.ID, "udt" + str(i) + "_6"))).click()
+            WebDriverWait(driver, Ntime).until(
+                EC.element_to_be_clickable((By.ID, "udt" + str(i + PoPo) + "_6"))).click()
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).clear()
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
                 str(Deltek_Data["Earning"][i]))
             time.sleep(0.1)
 
+            """
+            # Book
+            WebDriverWait(driver, Ntime).until(
+                EC.element_to_be_clickable((By.ID, "udt" + str(i + PoPo) + "_7"))).click()
+            WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).clear()
+            WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
+                str(Book))
+            time.sleep(0.1)
+            """
+
         for j in range(Value.columns.size):
-            for i in range(PoPo, Deltek_Data["Project ID"].size):
-                WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.ID, "hrs" + str(i+JoJo) + "_" + str(j)))).click()
+            for i in range(0, Deltek_Data["Project ID"].size):
+                WebDriverWait(driver, Ntime).until(
+                    EC.element_to_be_clickable((By.ID, "hrs" + str(i + PoPo) + "_" + str(j)))).click()
                 WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).clear()
                 WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
                     str(Value.iloc[i, j]))
@@ -466,7 +462,7 @@ def fill_deltek():
         traceback.print_exc()
 
 # Función para Fill_Pegasys
-def fill_pegasys(email, password,year,month):
+def fill_pegasys():
     try:
         LoginID     = email_entry_pegasys.get()
         Password    = password_entry_pegasys.get()
@@ -475,7 +471,7 @@ def fill_pegasys(email, password,year,month):
         ruta_directorio = os.path.dirname(NameDataBase)
 
         # Leer códigos del N4W Facility
-        output_folder = os.path.join(ruta_directorio,f'{year}-{month:02}')
+        output_folder = os.path.join(ruta_directorio)
         Value = pd.read_csv(os.path.join(output_folder, '02-Deltek.csv'),index_col=0)
         Value = Value.drop(columns=['Project ID', 'Activity ID', 'Award ID','Earning'])
         Value[np.isnan(Value)] = 0
@@ -615,19 +611,24 @@ Button_UpdateCategories.pack(side="left", padx=5, pady=5)
 module2 = tk.LabelFrame(App, text="Step 2 - Read outlook meetings")
 module2.pack(fill="x", padx=10, pady=5)
 
-year_label = tk.Label(module2, text="Year:")
-year_label.pack(side="left", padx=5, pady=5)
+# Selector de fecha de inicio
+start_date_label = tk.Label(module2, text="Start Date:")
+start_date_label.pack(side="left", padx=5, pady=5)
 
-year_dropdown = ttk.Combobox(module2, values=[str(y) for y in range(2024, 2100)])
-year_dropdown.pack(side="left", padx=5, pady=5)
+start_date_entry = DateEntry(module2, width=12, background='darkblue',
+                             foreground='white', borderwidth=2, date_pattern='yyyy-mm-dd')
+start_date_entry.pack(side="left", padx=5, pady=5)
 
-month_label = tk.Label(module2, text="Month:")
-month_label.pack(side="left", padx=5, pady=5)
+# Selector de fecha de finalización
+end_date_label = tk.Label(module2, text="End Date:")
+end_date_label.pack(side="left", padx=5, pady=5)
 
-month_dropdown = ttk.Combobox(module2, values=[str(m) for m in range(1, 13)])
-month_dropdown.pack(side="left", padx=5, pady=5)
+end_date_entry = DateEntry(module2, width=12, background='darkblue',
+                           foreground='white', borderwidth=2, date_pattern='yyyy-mm-dd')
+end_date_entry.pack(side="left", padx=5, pady=5)
 
-read_button = tk.Button(module2, text="Read meetings",command=lambda: generate_report())
+# Botón para leer reuniones
+read_button = tk.Button(module2, text="Read meetings", command=lambda: generate_report())
 read_button.pack(side="left", padx=5, pady=5)
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -646,6 +647,12 @@ password_entry_deltek.insert(0, "Password")
 
 fill_deltek_button = tk.Button(module3_deltek, text="Fill Deltek", command=lambda: fill_deltek())
 fill_deltek_button.pack(side="left", padx=5, pady=5)
+
+"""
+Book_deltek = tk.Entry(module3_deltek, width=8)
+Book_deltek.pack(side="left", padx=5, pady=5)
+Book_deltek.insert(0, "100")
+"""
 
 Posi_entry_deltek = tk.Entry(module3_deltek, width=3)
 Posi_entry_deltek.pack(side="left", padx=5, pady=5)
@@ -666,7 +673,7 @@ password_entry_pegasys.pack(side="left", padx=5, pady=5)
 password_entry_pegasys.insert(0, "Password")
 
 fill_pegasys_button = tk.Button(module3_pegasys, text="Fill Pegasys",
-                                command=lambda: fill_pegasys(email_entry_pegasys.get(), password_entry_pegasys.get(),int(year_dropdown.get()), int(month_dropdown.get())))
+                                command=lambda: fill_pegasys())
 fill_pegasys_button.pack(side="left", padx=5, pady=5)
 
 App.mainloop()
