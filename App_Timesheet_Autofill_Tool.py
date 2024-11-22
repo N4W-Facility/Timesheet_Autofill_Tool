@@ -36,6 +36,8 @@
 # ----------------------------------------------------------------------------------------------------------------------
 # Load libraries
 # ----------------------------------------------------------------------------------------------------------------------
+import locale
+import pytz
 import calendar
 import datetime as dt
 import os
@@ -56,6 +58,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 import traceback
+from pytz import timezone, utc
+from tzlocal import get_localzone
+from datetime import datetime
+from backports.zoneinfo import ZoneInfo
 
 # Función para crear directorio
 def create_folder(dir):
@@ -151,36 +157,94 @@ def run_update_categories(filepath):
 # ----------------------------------------------------------------------------------------------------------------------
 # Get meetings
 # ----------------------------------------------------------------------------------------------------------------------
+# Detectar y establecer automáticamente la configuración regional del sistema operativo
+#locale.setlocale(locale.LC_TIME, locale.getdefaultlocale()[0])  # Configuración regional del sistema operativo
+
 # Función para obtener los eventos del calendario de Outlook
+def convert_to_timezone(date):
+    """
+    Convierte una fecha a la zona horaria local automáticamente.
+    """
+    local_tz = get_localzone()  # Detectar la zona horaria local
+    if date.tzinfo is None:
+        # Asigna la zona horaria al objeto datetime
+        return date.replace(tzinfo=ZoneInfo(str(local_tz)))
+    else:
+        # Convierte a la zona horaria local
+        return date.astimezone(ZoneInfo(str(local_tz)))
+
 def get_calendar(start_date, end_date):
+    # Convertir automáticamente las fechas a la zona horaria local
+    start_date = convert_to_timezone(start_date)
+    end_date = convert_to_timezone(end_date)
+
+    # Conectar con Outlook
     outlook = win32com.client.Dispatch('Outlook.Application').GetNamespace('MAPI')
-    calendar = outlook.getDefaultFolder(9).Items
+    calendar = outlook.GetDefaultFolder(9).Items  # 9 corresponde al calendario
     calendar.IncludeRecurrences = True
     calendar.Sort('[Start]')
-    restriction = f"[Start] >= '{start_date.strftime('%d/%m/%Y')}' AND [END] <= '{end_date.strftime('%d/%m/%Y')}'"
-    calendar = calendar.Restrict(restriction)
-    return calendar
+
+    # Formatear las fechas en el formato esperado por Outlook
+    restriction = (
+        f"[Start] >= '{start_date.strftime('%m/%d/%Y %I:%M %p')}' AND "
+        f"[End] <= '{end_date.strftime('%m/%d/%Y %I:%M %p')}'"
+    )
+    restricted_items = calendar.Restrict(restriction)
+
+    # Filtrar las citas que realmente están dentro del rango deseado
+    filtered_appointments = [
+        app for app in restricted_items
+        if start_date <= app.Start <= end_date
+    ]
+
+    return filtered_appointments
+
+def remove_timezone(date):
+    """
+    Convierte un objeto datetime timezone-aware a timezone-naive.
+    """
+    return date.replace(tzinfo=None)
 
 # Función para obtener todas las citas
 def get_appointments(calendar):
     appointments = list(calendar)
+    data = []
 
-    cal_subject = [app.subject if app.subject else 'No Subject' for app in appointments]
-    cal_date = pd.to_datetime([app.start.strftime('%d/%m/%Y') for app in appointments], dayfirst=True)
-    cal_start = pd.to_datetime([app.start.strftime('%d/%m/%Y %H:%M:%S') for app in appointments], dayfirst=True)
-    cal_end = pd.to_datetime([app.end.strftime('%d/%m/%Y %H:%M:%S') for app in appointments], dayfirst=True)
-    cal_body = [app.body if app.body else '' for app in appointments]
-    cal_category = [app.Categories if app.Categories else 'No Category' for app in appointments]
-    hours = [(end - start).total_seconds() / 3600 for start, end in zip(cal_start, cal_end)]
+    for app in appointments:
+        try:
+            # Obtener la información básica
+            subject = app.Subject if app.Subject else "No Subject"
+            start = app.Start
+            end = app.End
+            category = app.Categories if app.Categories else "No Category"
 
-    df = pd.DataFrame({
-        'Subject': cal_subject,
-        'Date': cal_date,
-        'Start_Time': cal_start,
-        'End_Time': cal_end,
-        'Hours': hours,
-        'Category': cal_category
-    })
+            # Convertir las fechas a la zona horaria local
+            start = convert_to_timezone(start)
+            end = convert_to_timezone(end)
+
+            # Eliminar la zona horaria para compatibilidad con Excel
+            start = remove_timezone(start)
+            end = remove_timezone(end)
+
+            # Calcular la duración en horas
+            if isinstance(start, datetime) and isinstance(end, datetime):
+                hours = (end - start).total_seconds() / 3600
+                data.append({
+                    'Subject': subject,
+                    'Date': start.date(),
+                    'Start_Time': start,
+                    'End_Time': end,
+                    'Hours': hours,
+                    'Category': category
+                })
+            else:
+                print(f"Advertencia: La reunión '{subject}' tiene fechas inválidas y será omitida.")
+        except Exception as e:
+            print(f"Error al procesar la reunión '{subject}': {e}")
+
+    # Crear un DataFrame con los datos procesados
+    df = pd.DataFrame(data) if data else pd.DataFrame(
+        columns=['Subject', 'Date', 'Start_Time', 'End_Time', 'Hours', 'Category'])
 
     return df
 
@@ -201,16 +265,21 @@ def process_category(category):
     ]
 
     # Buscar si alguna palabra clave está en el texto
-    found_keyword = next((keyword for keyword in keywords if re.search(keyword, category, flags=re.IGNORECASE)), "REGULAR")
+    found_keyword = next((keyword for keyword in keywords if re.search(keyword, category, flags=re.IGNORECASE)),
+                         "REGULAR")
 
     # Si se encuentra la palabra clave, eliminarla del texto
-    if found_keyword != 1:
+    if found_keyword != "REGULAR":
         category = re.sub(found_keyword, "", category, flags=re.IGNORECASE)
 
     # Eliminar comas y espacios adicionales
     category = category.replace(",", "").strip()
 
+    # Eliminar comas y espacios adicionales
+    category = category.replace(";", "").strip()
+
     return found_keyword, category
+
 
 # Función principal para generar el reporte
 def generate_report():
@@ -225,26 +294,34 @@ def generate_report():
             messagebox.showerror("Error", "Start date cannot be after end date.")
             return
 
-        # Cargar datos del calendario sin filtrar por palabra clave
+        # Cargar datos del calendario
         raw_data = get_calendar(start_date, end_date)
         results = get_appointments(raw_data)
 
-        # identificar dias
-        # results['Earning'] = results['Category'].apply(lambda x: next((keyword for keyword in keywords if keyword.lower() in x.lower()), 1))
         results[['Earning', 'Category']] = results['Category'].apply(lambda x: pd.Series(process_category(x)))
 
-        # Agregación de resultados
-        tmp = results.groupby(by=['Date', 'Category','Earning'], as_index=False)['Hours'].sum()
-        tmp = tmp.pivot(index=['Category','Earning'], columns='Date', values='Hours').fillna(0)
+        # Agregar resultados
+        tmp = results.groupby(by=['Date', 'Category', 'Earning'], as_index=False)['Hours'].sum()
+        tmp = tmp.pivot(index=['Category', 'Earning'], columns='Date', values='Hours').fillna(0)
         tmp = tmp.reset_index(level='Earning')
 
-        # Crear reporte con fechas completas del mes
-        pd.date_range(start_date, end_date,freq='D')
-        #report = pd.DataFrame(columns=np.arange(start_date, end_date, dtype='datetime64[D]'))
-        report = pd.DataFrame(columns=pd.date_range(start_date, end_date,freq='D'))
+        # Crear reporte con fechas completas del rango
+        report = pd.DataFrame(columns=pd.date_range(start_date, end_date, freq='D'))
+
+        # Asegúrate de que las columnas de `tmp` que representan fechas sean datetime
+        tmp.columns = pd.to_datetime(tmp.columns, errors='coerce')
+
+        # Asegúrate de que las columnas de `report` sean datetime
+        report.columns = pd.to_datetime(report.columns, errors='coerce')
+
+        # Concatenar y llenar con ceros
         report = pd.concat([report, tmp], axis=0).fillna(0)
 
-        report.index    = [texto.split('|')[0].strip() for texto in report.index.values]
+        # Formatear las columnas de fechas en el DataFrame final
+        report.columns = report.columns.map(
+            lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if isinstance(x, pd.Timestamp) else x)
+
+        report.index = [texto.split('|')[0].strip() for texto in report.index.values]
 
         # Leer códigos del N4W Facility
         N4WCodes = readDataBase(NameDataBase)
@@ -254,19 +331,17 @@ def generate_report():
         N4WCodes['Award ID'] = N4WCodes['Award ID'].astype(str)
         N4WCodes = N4WCodes.set_index(['Pegasys ID'])
 
+        # Combinar con el reporte generado
         ruta_directorio = os.path.dirname(NameDataBase)
         Value = pd.merge(N4WCodes, report, left_index=True, right_index=True)
-        Value = Value.drop(columns=['Description','Category','Include'])
+        Value = Value.drop(columns=['Description', 'Category', 'Include'])
+        Value.columns = [str(col) if pd.notnull(col) else 'Earning' for col in Value.columns]
 
-        # Mover la columna 'E' (última) a la posición 4 (índice 3, ya que las posiciones empiezan en 0)
+        # Mover columna 'Earning' a una posición específica
         column_to_move = 'Earning'
         new_position = 3
-
-        # Obtener el resto de las columnas
         cols = Value.columns.tolist()
         cols.insert(new_position, cols.pop(cols.index(column_to_move)))
-
-        # Reordenar el DataFrame
         Value = Value[cols]
 
         # Crear un DataFrame con los textos a reemplazar
@@ -306,19 +381,18 @@ def generate_report():
         # Reemplazar los textos en la columna 'Category' por los IDs
         Value['Earning'] = Value['Earning'].map(mapping)
 
-        # Crear carpeta para guardar resultados
-        output_folder = os.path.join(ruta_directorio)
-        create_folder(output_folder)
-
         # Guardar resultados
+        output_folder = os.path.join(ruta_directorio)
+        os.makedirs(output_folder, exist_ok=True)
+
         results.to_excel(os.path.join(output_folder, '01-Report.xlsx'))
-        Value.to_csv(os.path.join(output_folder, '02-Deltek.csv'),index_label='Pegasys ID')
-        #summary.to_csv(os.path.join(output_folder, '03-Total_Deltek.csv'), index_label='Name')
+        Value.to_csv(os.path.join(output_folder, '02-Deltek.csv'), index_label='Pegasys ID')
 
         tk.messagebox.showinfo(message="Process Completed", title="Status")
     except Exception as e:
         messagebox.showerror("General Error", f"An unexpected error occurred: {e}")
         traceback.print_exc()
+
 
 # Función para seleccionar archivo
 def select_file(entry_field):
