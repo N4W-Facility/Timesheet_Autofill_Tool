@@ -294,6 +294,8 @@ def generate_report():
             messagebox.showerror("Error", "Start date cannot be after end date.")
             return
 
+        end_date = end_date + dt.timedelta(days=1)
+
         # Cargar datos del calendario
         raw_data = get_calendar(start_date, end_date)
         results = get_appointments(raw_data)
@@ -380,6 +382,9 @@ def generate_report():
 
         # Reemplazar los textos en la columna 'Category' por los IDs
         Value['Earning'] = Value['Earning'].map(mapping)
+
+        # eliminar el dia adicional que se incluye
+        Value = Value.drop(columns=Value.columns[-1])
 
         # Guardar resultados
         output_folder = os.path.join(ruta_directorio)
