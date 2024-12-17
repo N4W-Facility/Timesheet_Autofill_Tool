@@ -61,7 +61,6 @@ import traceback
 from pytz import timezone, utc
 from tzlocal import get_localzone
 from datetime import datetime
-from backports.zoneinfo import ZoneInfo
 
 # Función para crear directorio
 def create_folder(dir):
@@ -160,44 +159,52 @@ def run_update_categories(filepath):
 # Detectar y establecer automáticamente la configuración regional del sistema operativo
 #locale.setlocale(locale.LC_TIME, locale.getdefaultlocale()[0])  # Configuración regional del sistema operativo
 
-# Función para obtener los eventos del calendario de Outlook
-def convert_to_timezone(date):
-    """
-    Convierte una fecha a la zona horaria local automáticamente.
-    """
-    local_tz = get_localzone()  # Detectar la zona horaria local
-    if date.tzinfo is None:
-        # Asigna la zona horaria al objeto datetime
-        return date.replace(tzinfo=ZoneInfo(str(local_tz)))
-    else:
-        # Convierte a la zona horaria local
-        return date.astimezone(ZoneInfo(str(local_tz)))
-
 def get_calendar(start_date, end_date):
-    # Convertir automáticamente las fechas a la zona horaria local
-    start_date = convert_to_timezone(start_date)
-    end_date = convert_to_timezone(end_date)
+    # Conexión a Outlook
+    outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+    calendar = outlook.GetDefaultFolder(9)  # Carpeta predeterminada de Calendario
 
-    # Conectar con Outlook
-    outlook = win32com.client.Dispatch('Outlook.Application').GetNamespace('MAPI')
-    calendar = outlook.GetDefaultFolder(9).Items  # 9 corresponde al calendario
-    calendar.IncludeRecurrences = True
-    calendar.Sort('[Start]')
+    # Detectar zona horaria del sistema
+    local_tz = get_localzone()
 
-    # Formatear las fechas en el formato esperado por Outlook
-    restriction = (
-        f"[Start] >= '{start_date.strftime('%m/%d/%Y %I:%M %p')}' AND "
-        f"[End] <= '{end_date.strftime('%m/%d/%Y %I:%M %p')}'"
-    )
-    restricted_items = calendar.Restrict(restriction)
+    # Convertir fechas a formato datetime con zona horaria
+    start_date = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=local_tz)
+    end_date = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=local_tz)
 
-    # Filtrar las citas que realmente están dentro del rango deseado
-    filtered_appointments = [
-        app for app in restricted_items
-        if start_date <= app.Start <= end_date
-    ]
+    # Obtener elementos del calendario
+    items = calendar.Items
+    items.IncludeRecurrences = True
+    items.Sort("[Start]")
 
-    return filtered_appointments
+    start_date1 = start_date - dt.timedelta(days=25)
+    end_date1 = end_date + dt.timedelta(days=25)
+
+    # Filtrar reuniones por rango de fechas
+    restriction = f"[Start] >= '{start_date1.strftime('%m/%d/%Y %H:%M %p')}' AND [End] <= '{end_date1.strftime('%m/%d/%Y %H:%M %p')}'"
+    restricted_items = items.Restrict(restriction)
+
+    # Crear diccionario para almacenar reuniones por día y Category
+    meetings = []
+
+    for item in restricted_items:
+        try:
+            # Verificar si el elemento está dentro del rango explícitamente
+            meeting_start = item.Start
+            meeting_end = item.End
+            if remove_timezone(start_date) <= remove_timezone(meeting_start) <= remove_timezone(end_date):
+                category = item.Categories if item.Categories else "Sin Category"
+                meeting_date = meeting_start.date()
+                duration = (meeting_end - meeting_start).total_seconds() / 3600  # Duración en horas
+
+                meetings.append({'Date': meeting_date, 'Category': category, 'Hours': duration})
+        except AttributeError:
+            # Saltar elementos que no tengan las propiedades necesarias
+            continue
+
+    # Crear DataFrame base
+    df = pd.DataFrame(meetings)
+
+    return df
 
 def remove_timezone(date):
     """
@@ -205,56 +212,12 @@ def remove_timezone(date):
     """
     return date.replace(tzinfo=None)
 
-# Función para obtener todas las citas
-def get_appointments(calendar):
-    appointments = list(calendar)
-    data = []
-
-    for app in appointments:
-        try:
-            # Obtener la información básica
-            subject = app.Subject if app.Subject else "No Subject"
-            start = app.Start
-            end = app.End
-            category = app.Categories if app.Categories else "No Category"
-
-            # Convertir las fechas a la zona horaria local
-            start = convert_to_timezone(start)
-            end = convert_to_timezone(end)
-
-            # Eliminar la zona horaria para compatibilidad con Excel
-            start = remove_timezone(start)
-            end = remove_timezone(end)
-
-            # Calcular la duración en horas
-            if isinstance(start, datetime) and isinstance(end, datetime):
-                hours = (end - start).total_seconds() / 3600
-                data.append({
-                    'Subject': subject,
-                    'Date': start.date(),
-                    'Start_Time': start,
-                    'End_Time': end,
-                    'Hours': hours,
-                    'Category': category
-                })
-            else:
-                print(f"Advertencia: La reunión '{subject}' tiene fechas inválidas y será omitida.")
-        except Exception as e:
-            print(f"Error al procesar la reunión '{subject}': {e}")
-
-    # Crear un DataFrame con los datos procesados
-    df = pd.DataFrame(data) if data else pd.DataFrame(
-        columns=['Subject', 'Date', 'Start_Time', 'End_Time', 'Hours', 'Category'])
-
-    return df
-
 # Función para calcular días laborables del mes
 def calculate_workdays(year, month):
     _, total_days = calendar.monthrange(year, month)
     workdays = sum(1 for day in range(1, total_days + 1)
                    if dt.datetime(year, month, day).weekday() < 5)  # Excluye sábados y domingos
     return workdays
-
 
 # Función para procesar la columna `Category`
 def process_category(category):
@@ -284,6 +247,9 @@ def process_category(category):
 # Función principal para generar el reporte
 def generate_report():
     try:
+        # Detectar zona horaria del sistema
+        local_tz = get_localzone()
+
         # Obtener las fechas seleccionadas
         start_date = datetime.strptime(start_date_entry.get(), '%Y-%m-%d')
         end_date = datetime.strptime(end_date_entry.get(), '%Y-%m-%d')
@@ -297,8 +263,8 @@ def generate_report():
         end_date = end_date + dt.timedelta(days=1)
 
         # Cargar datos del calendario
-        raw_data = get_calendar(start_date, end_date)
-        results = get_appointments(raw_data)
+        results = get_calendar(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+        #results = get_appointments(raw_data)
 
         results[['Earning', 'Category']] = results['Category'].apply(lambda x: pd.Series(process_category(x)))
 
@@ -474,11 +440,32 @@ def fill_deltek():
         WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.ID, "deleteLine"))).click()
         time.sleep(0.5)
 
+        # JavaScript para mover el scroll, usando el porcentaje de entrada
+        js_script = """
+                let scroller = document.getElementById('udtScroller'); // Elemento que tiene el scroll
+                let scrollContent = document.getElementById('udtScrollerContent'); // Contenido dentro del scroll
+
+                if (scroller && scrollContent) {
+                    // Calcular el desplazamiento total posible
+                    let maxScrollLeft = scrollContent.offsetWidth - scroller.offsetWidth;
+                    let scrollAmount = maxScrollLeft * arguments[0]; // Mover el porcentaje ingresado
+                    scroller.scrollLeft = scrollAmount; // Ajustar el desplazamiento horizontal
+                }
+                """
+
+        js_scrip2 = """
+                let scroller = document.getElementById('udtScroller'); // Elemento que tiene el scroll
+                if (scroller) {
+                    scroller.scrollLeft = 0; // Volver al inicio horizontalmente
+                    scroller.scrollTop = 0;  // Volver al inicio verticalmente (opcional)
+                }
+                """
+
         # ----------------------------------------------------------------------------------------------------------------------
         # Diligenciar los Projects - ID
         # ----------------------------------------------------------------------------------------------------------------------
         # 4. Navegar a la segunda página
-        #driver.get("https://tnc.hostedaccess.com/DeltekTC/TimeCollection.msv")
+        # driver.get("https://tnc.hostedaccess.com/DeltekTC/TimeCollection.msv")
         """
         Book = Book_deltek.get()
         """
@@ -489,9 +476,15 @@ def fill_deltek():
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
                 Deltek_Data["Project ID"][i])
 
+            # Ejecutar el script en la página con el porcentaje como argumento
+            driver.execute_script(js_script, 0.2)
+
             # GeoOrigen
             WebDriverWait(driver, Ntime).until(
                 EC.element_to_be_clickable((By.ID, "udt" + str(i + PoPo) + "_3"))).click()
+
+            # Ejecutar el script en la página con el porcentaje como argumento
+            driver.execute_script(js_script, 0.3)
 
             # Award ID
             WebDriverWait(driver, Ntime).until(
@@ -499,6 +492,9 @@ def fill_deltek():
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).clear()
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
                 str(Deltek_Data["Award ID"][i]))
+
+            # Ejecutar el script en la página con el porcentaje como argumento
+            driver.execute_script(js_script, 0.4)
 
             # Activity
             WebDriverWait(driver, Ntime).until(
@@ -508,6 +504,9 @@ def fill_deltek():
                 str(Deltek_Data["Activity ID"][i]))
             time.sleep(0.1)
 
+            # Ejecutar el script en la página con el porcentaje como argumento
+            driver.execute_script(js_script, 0.5)
+
             # Indicador
             WebDriverWait(driver, Ntime).until(
                 EC.element_to_be_clickable((By.ID, "udt" + str(i + PoPo) + "_6"))).click()
@@ -515,6 +514,9 @@ def fill_deltek():
             WebDriverWait(driver, Ntime).until(EC.presence_of_element_located((By.ID, "editor"))).send_keys(
                 str(Deltek_Data["Earning"][i]))
             time.sleep(0.1)
+
+            # Ejecutar el script en la página con el porcentaje como argumento
+            driver.execute_script(js_scrip2)
 
             """
             # Book
