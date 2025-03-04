@@ -9,28 +9,6 @@
                   Carlos A. Rogéliz Prada
   Email         : jonathan.nogales@tnc.org
   Date          : November, 2024
-
- --------------------------------------------------------------------------
-  This program is free software: you can redistribute it and/or modify it
-  under the terms of the GNU General Public License as published by the
-  Free Software Foundation, either version 3 of the License, or option) any
-  later version. This program is distributed in the hope that it will be
-  useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-  ee the GNU General Public License for more details. You should have
-  received a copy of the GNU General Public License along with this program
-  If not, see http://www.gnu.org/licenses/.
-  -------------------------------------------------------------------------
-                                DESCRIPTION
-  -------------------------------------------------------------------------
-  The Timesheet Autofill Tool has been developed to streamline the process
-  of filling out Pegasys and Deltek timesheets by automatically populating
-  them with relevant data from TNC's official Deltek system. Given that all
-  N4W staff members at The Nature Conservancy are required to complete both
-  Deltek and Pegasys timesheets monthly, this tool is designed to save time,
-  reduce manual entry, and minimize errors. By leveraging Python, the tool
-  simplifies the timesheet process, ensuring that key information from Deltek
-  is efficiently transferred to Pegasys.
 """
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -159,7 +137,7 @@ def run_update_categories(filepath):
 # Detectar y establecer automáticamente la configuración regional del sistema operativo
 #locale.setlocale(locale.LC_TIME, locale.getdefaultlocale()[0])  # Configuración regional del sistema operativo
 
-def get_calendar(start_date, end_date):
+def get_calendar(start_date, end_date,i1=25,i2=25):
     # Conexión a Outlook
     outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
     calendar = outlook.GetDefaultFolder(9)  # Carpeta predeterminada de Calendario
@@ -176,11 +154,13 @@ def get_calendar(start_date, end_date):
     items.IncludeRecurrences = True
     items.Sort("[Start]")
 
-    start_date1 = start_date - dt.timedelta(days=25)
-    end_date1 = end_date + dt.timedelta(days=25)
+    start_date1 = start_date - dt.timedelta(days=i1)
+    end_date1 = end_date + dt.timedelta(days=i2)
 
     # Filtrar reuniones por rango de fechas
-    restriction = f"[Start] >= '{start_date1.strftime('%m/%d/%Y %H:%M %p')}' AND [End] <= '{end_date1.strftime('%m/%d/%Y %H:%M %p')}'"
+    start_str = start_date1.strftime('%m/%d/%Y %H:%M')
+    end_str = end_date1.strftime('%m/%d/%Y %H:%M')
+    restriction = f"[Start] >= '{start_str}' AND [End] <= '{end_str}'"
     restricted_items = items.Restrict(restriction)
 
     # Crear diccionario para almacenar reuniones por día y Category
@@ -262,9 +242,17 @@ def generate_report():
 
         end_date = end_date + dt.timedelta(days=1)
 
-        # Cargar datos del calendario
-        results = get_calendar(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
-        #results = get_appointments(raw_data)
+        Aditivos = [13, 2, 3, 5, 7, 11, 17, 19, 23, 29, 31]
+        for i1 in Aditivos:
+            for i2 in Aditivos:
+                # Cargar datos del calendario
+                results = get_calendar(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'),i1,i2)
+                #results = get_appointments(raw_data)
+
+                if len(results.columns) is not 0:
+                    break
+            if len(results.columns) is not 0:
+                break
 
         results[['Earning', 'Category']] = results['Category'].apply(lambda x: pd.Series(process_category(x)))
 
@@ -400,9 +388,12 @@ def fill_deltek():
         chrome_options = webdriver.ChromeOptions()
         chrome_options.add_argument('--start-maximized')
         chrome_options.add_argument('--desable-extensions')
-        chrome_options.add_experimental_option("detach", True)
-        service = Service(executable_path=Path)
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        try:
+            chrome_options.add_experimental_option("detach", True)
+            service = Service(executable_path=Path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        except:
+            driver = webdriver.Chrome(Path, chrome_options=chrome_options)
 
         # ----------------------------------------------------------------------------------------------------------------------
         # Abrir la página de Deltek
