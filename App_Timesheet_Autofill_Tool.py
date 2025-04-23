@@ -35,6 +35,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import StaleElementReferenceException
 import traceback
 from pytz import timezone, utc
 from tzlocal import get_localzone
@@ -550,8 +551,8 @@ def fill_pegasys():
 
         # Leer códigos del N4W Facility
         output_folder = os.path.join(ruta_directorio)
-        Value = pd.read_csv(os.path.join(output_folder, '02-Deltek.csv'),index_col=0)
-        Value = Value.drop(columns=['Project ID', 'Activity ID', 'Award ID','Earning'])
+        Value = pd.read_csv(os.path.join(output_folder, '02-Deltek.csv'), index_col=0)
+        Value = Value.drop(columns=['Project ID', 'Activity ID', 'Award ID', 'Earning'])
         Value[np.isnan(Value)] = 0
         Value.columns = pd.to_datetime(Value.columns)
         Value = Value.groupby(Value.index).sum()
@@ -559,105 +560,84 @@ def fill_pegasys():
         ListDate = Value.columns
         ListPro  = Value.index.values
 
-        # ----------------------------------------------------------------------------------------------------------------------
-        # Abrir Google Chrome operado con Selenium cambiando la carpeta de descargas
-        # ----------------------------------------------------------------------------------------------------------------------
         chrome_options = webdriver.ChromeOptions()
         chrome_options.add_argument('--start-maximized')
-        chrome_options.add_argument('--desable-extensions')
+        chrome_options.add_argument('--disable-extensions')
         chrome_options.add_experimental_option("detach", True)
+
         try:
             service = Service(executable_path=Path)
             driver = webdriver.Chrome(service=service, options=chrome_options)
         except:
-            driver = webdriver.Chrome(Path,chrome_options=chrome_options)
+            driver = webdriver.Chrome(Path, chrome_options=chrome_options)
 
-        # ----------------------------------------------------------------------------------------------------------------------
-        # Abrir la página de Deltek
-        # ----------------------------------------------------------------------------------------------------------------------
         driver.get('https://time.pegasys.co.za/trs/index.php')
 
         Ntime = 10
-        # ----------------------------------------------------------------------------------------------------------------------
-        # Introducir correo
-        # ----------------------------------------------------------------------------------------------------------------------
+
         WebDriverWait(driver, Ntime).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 'input#email.form-control'))).send_keys(LoginID)
 
-        # ----------------------------------------------------------------------------------------------------------------------
-        # Introducir contraseña
-        # ----------------------------------------------------------------------------------------------------------------------
         WebDriverWait(driver, Ntime).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 'input#pass.form-control'))).send_keys(Password)
 
-        # ----------------------------------------------------------------------------------------------------------------------
-        # Entrar al timesheet de pegasys
-        # ----------------------------------------------------------------------------------------------------------------------
         WebDriverWait(driver, Ntime).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 'input.button.glossy.orange'))).click()
 
-        # ----------------------------------------------------------------------------------------------------------------------
-        # Selecciona una fecha
-        # ----------------------------------------------------------------------------------------------------------------------
         for Datei in ListDate:
             if np.sum(Value[Datei]) == 0.0:
                 continue
 
-            # Convertir la fecha a un objeto datetime
             fecha = datetime.strptime(Datei.strftime("%Y-%m-%d"), "%Y-%m-%d")
-
-            # Calcular la fecha del lunes de esa semana
-            # weekday() devuelve 0 para lunes, 1 para martes, ..., 6 para domingo
             NumDay = fecha.weekday()
             lunes = fecha - timedelta(days=NumDay)
             Datejj = f"{lunes.strftime('%Y-%m-%d')}"
 
-            # Seleccionar la semana en la cual se deben cargar los tiempos
             Dateii = WebDriverWait(driver, Ntime).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, 'select'))).get_attribute("value")
 
             if Datejj != Dateii:
                 WebDriverWait(driver, Ntime).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, 'input.button.glossy.orange'))).click()
-                WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'select'))).send_keys(
-                    Datejj)
+                WebDriverWait(driver, Ntime).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'select'))).send_keys(Datejj)
 
-            # Esperar hasta que la tabla esté presente
-            tabla = WebDriverWait(driver, Ntime).until(
-                EC.presence_of_element_located((By.XPATH, "//form[@action='/trs/updatetimesheet.php']/table")))
-
-            # Extraer todas las filas de la tabla (excluyendo la fila de encabezado)
-            filas = tabla.find_elements(By.TAG_NAME, "tr")[1:]
-
-            # Iterar sobre cada fila para buscar la columna "Task" con el valor NameProj
             for ProjectName in ListPro:
                 if Value[Datei][ProjectName] == 0:
                     continue
 
+                tabla = WebDriverWait(driver, Ntime).until(
+                    EC.visibility_of_element_located((By.XPATH, "//form[@action='/trs/updatetimesheet.php']/table")))
+
+                filas = tabla.find_elements(By.TAG_NAME, "tr")[1:]
+
                 for fila in filas:
-                    celdas = fila.find_elements(By.TAG_NAME, "td")
+                    try:
+                        celdas = fila.find_elements(By.TAG_NAME, "td")
+                        if len(celdas) < 2:
+                            continue
 
-                    # Verificar si la fila tiene suficientes columnas para evitar errores de índice
-                    if len(celdas) < 2:
-                        continue
-
-                    # Obtener el texto de la columna "Task" (índice 1)
-                    task_texto = celdas[1].text
-
-                    # Verificar si el texto coincide con NameProj
-                    if task_texto == ProjectName:
-                        # Llenar los campos de entrada de esa fila con el valor '1'
+                        task_texto = celdas[1].text
+                        if task_texto == ProjectName:
+                            celda = celdas[4 + NumDay]
+                            input_tag = celda.find_element(By.TAG_NAME, "input")
+                            input_tag.clear()
+                            input_tag.send_keys('%.1f' % Value[Datei][ProjectName])
+                            break
+                    except StaleElementReferenceException:
+                        # Reintenta una sola vez por si el DOM fue modificado
+                        time.sleep(1)
+                        fila = tabla.find_elements(By.TAG_NAME, "tr")[1:][filas.index(fila)]
+                        celdas = fila.find_elements(By.TAG_NAME, "td")
                         celda = celdas[4 + NumDay]
                         input_tag = celda.find_element(By.TAG_NAME, "input")
                         input_tag.clear()
-                        input_tag.send_keys('%f' % Value[Datei][ProjectName])
-                        # Salir del bucle después de llenar la fila
+                        input_tag.send_keys('%.1f' % Value[Datei][ProjectName])
                         break
 
-        # Guardar al finalizar
-        WebDriverWait(driver, Ntime).until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input.button.glossy.orange'))).click()
+        WebDriverWait(driver, Ntime).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, 'input.button.glossy.orange'))).click()
 
-        # Mensaje de error
         tk.messagebox.showinfo(message="Process Completed", title="Status")
 
     except Exception as e:
