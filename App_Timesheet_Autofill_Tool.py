@@ -192,21 +192,31 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     
     # Agregar información de prorate al dataframe deltek
     df_deltek['Prorate'] = df_deltek['Code'].map(prorate_dict).fillna(0).astype(int)
-    
+
+    # Identificar proyectos exceptuados (P100001 y otros códigos especiales externos)
+    # Estos proyectos NO participan en redistribución: ni dan ni reciben horas
+    excepted_projects = df_deltek['Project ID'] == 'P100001'
+    df_deltek.loc[excepted_projects, 'Prorate'] = -1  # Marcador especial para exceptuados
+
     # Identificar columnas de fechas
     date_columns = [col for col in df_deltek.columns if '2024-' in col or '2025-' in col]
     if not date_columns:
         print("No date columns found in Deltek file")
         return
-    
+
     print(f"Found {len(date_columns)} date columns")
-    
-    # Separar proyectos virtuales (prorate=1) y reales (prorate=0)
+
+    # Separar proyectos en tres categorías:
+    # - Virtuales (prorate=1): se redistribuyen a proyectos reales
+    # - Reales (prorate=0): reciben horas de proyectos virtuales
+    # - Exceptuados (prorate=-1): se mantienen exactamente igual (P100001, etc.)
     df_virtual = df_deltek[df_deltek['Prorate'] == 1].copy()
     df_real = df_deltek[df_deltek['Prorate'] == 0].copy()
+    df_excepted = df_deltek[df_deltek['Prorate'] == -1].copy()
     
     print(f"Virtual projects: {len(df_virtual)}")
     print(f"Real projects: {len(df_real)}")
+    print(f"Excepted projects: {len(df_excepted)}")
     
     if len(df_real) == 0:
         print("No real projects found for redistribution")
@@ -263,6 +273,14 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     if 'Prorate' in df_result.columns:
         df_result = df_result.drop('Prorate', axis=1)
     
+    # Agregar proyectos exceptuados al resultado final (sin modificaciones)
+    if len(df_excepted) > 0:
+        # Remover columna prorate de proyectos exceptuados antes de agregar
+        if 'Prorate' in df_excepted.columns:
+            df_excepted = df_excepted.drop('Prorate', axis=1)
+        df_result = pd.concat([df_result, df_excepted], ignore_index=True)
+        print(f"Added {len(df_excepted)} excepted projects to final result")
+
     # Agrupar por todas las columnas excepto las de fechas y sumar (en caso de duplicados)
     groupby_columns = [col for col in df_result.columns if col not in date_columns]
     df_result = df_result.groupby(groupby_columns, as_index=False)[date_columns].sum()
@@ -276,11 +294,13 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
         # Imprimir resumen
         virtual_total = df_virtual[date_columns].sum().sum()
         real_original_total = df_real[date_columns].sum().sum()
+        excepted_total = df_excepted[date_columns].sum().sum() if len(df_excepted) > 0 else 0
         final_total = df_result[date_columns].sum().sum()
-        
+
         print(f"\nSummary:")
         print(f"- Virtual projects total hours: {virtual_total:.2f}")
         print(f"- Real projects original hours: {real_original_total:.2f}")
+        print(f"- Excepted projects hours (unchanged): {excepted_total:.2f}")
         print(f"- Final total hours: {final_total:.2f}")
         print(f"- Hours redistributed: {virtual_total:.2f}")
         
@@ -288,13 +308,14 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
         print(f"Error saving output file: {e}")
 
 
-def show_prorate_comparison_window(original_file: str, prorated_file: str) -> bool:
+def show_prorate_comparison_window(original_file: str, prorated_file: str, database_path: str = None) -> bool:
     """
     Muestra ventana de comparación entre horas originales y con prorate por código de proyecto.
 
     Args:
         original_file (str): Ruta al archivo original 02-Deltek.csv
         prorated_file (str): Ruta al archivo con prorate 03-Deltek_Reallocation.csv
+        database_path (str): Ruta al archivo de base de datos con proyectos
 
     Returns:
         bool: True si el usuario acepta, False si cancela
@@ -304,23 +325,29 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str) -> bo
         df_original = pd.read_csv(original_file)
         df_prorated = pd.read_csv(prorated_file)
         
-        # Cargar información adicional del N4W Task Details
-        project_path = os.path.dirname(original_file)
-        n4w_details_file = os.path.join(project_path, "N4W_Task_Details.xlsx")
-        
+        # Cargar información adicional de la base de datos de proyectos
         project_details = {}
         try:
-            df_n4w = pd.read_excel(n4w_details_file)
-            # Crear diccionario con información del proyecto usando Task_Name como clave
-            for _, row in df_n4w.iterrows():
-                project_details[row['Task_Name']] = {
-                    'Project_Name': row.get('Task_Name_Description', 'N/A'),
-                    'Project_ID': row.get('Project_ID', ''),
-                    'Award_ID': row.get('Award_ID', ''),
-                    'Activity_Code': row.get('Activity_Code', '')
-                }
+            if database_path and os.path.exists(database_path):
+                # Leer las hojas N4W_Projects y TNC_Projects
+                df_n4w_projects = pd.read_excel(database_path, sheet_name='N4W-Projects')
+                df_tnc_projects = pd.read_excel(database_path, sheet_name='TNC-Projects')
+
+                # Concatenar ambas hojas
+                df_projects = pd.concat([df_n4w_projects, df_tnc_projects], ignore_index=True)
+
+                # Crear diccionario con información del proyecto usando Code como clave
+                for _, row in df_projects.iterrows():
+                    project_details[row['Code']] = {
+                        'Project_Name': row.get('Description', 'N/A'),
+                        'Project_ID': row.get('Project ID', ''),
+                        'Award_ID': row.get('Award ID', ''),
+                        'Activity_Code': row.get('Activity ID', '')
+                    }
+            else:
+                print(f"Warning: Database path not provided or file not found: {database_path}")
         except Exception as e:
-            print(f"Warning: Could not load N4W Task Details: {e}")
+            print(f"Warning: Could not load project database: {e}")
             project_details = {}
 
         # Obtener columnas de fechas
@@ -928,6 +955,7 @@ def resolve_onedrive_target(target_path_in_onedrive: str,
             enterprise = [a for a in accounts if " - " in (a["label"] or "")]
             chosen = enterprise[0] if enterprise else accounts[0]
 
+    chosen["root"] = chosen["root"].replace("OneDrive - ", "")
     root = Path(chosen["root"])
     return root.joinpath(*parts)
 
@@ -1682,7 +1710,8 @@ def fill_deltek(position, login_id, password, database_name, prorate=False,
             # Show comparison window and get user confirmation
             user_approved = show_prorate_comparison_window(
                 os.path.join(ProjectPath, '02-Deltek.csv'),
-                output_file
+                output_file,
+                database_name
             )
 
             if not user_approved:
@@ -1996,8 +2025,6 @@ def find_existing_timesheets_in_onedrive(email):
     try:
         # Usar la función existente para obtener la ruta de OneDrive/Tester_TimeSheet
         tester_folder_path = resolve_onedrive_target("N4WTimeTracking - Science Timesheets")
-
-        tester_folder_path = str(tester_folder_path).replace('OneDrive - ','')
 
         if not tester_folder_path.exists():
             print(f"OneDrive Tester_TimeSheet folder not found: {tester_folder_path}")
