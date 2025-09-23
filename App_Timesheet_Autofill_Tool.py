@@ -1062,14 +1062,18 @@ def CreateExcel_N4WFormat(archivo_csv, email_empleado, nombre_empleado, ruta_gua
         fecha_str = col.replace(' 00:00:00', '')
         fechas.append(datetime.strptime(fecha_str, '%Y-%m-%d'))
 
-    # Crear lista para almacenar las filas del Excel final
-    filas_excel = []
-
     # Filtrar filas: eliminar las que tengan Code que inicien con "TNC"
     df_filtrado = df[~df['Code'].str.startswith('TNC', na=False)]
 
+    # Agrupar por proyecto eliminando la columna 'Earning' y sumando las horas
+    columnas_agrupacion = ['Code', 'Project ID', 'Activity ID', 'Award ID']
+    df_agrupado = df_filtrado.groupby(columnas_agrupacion, as_index=False)[columnas_fecha].sum()
+
+    # Crear lista para almacenar las filas del Excel final
+    filas_excel = []
+
     # Procesar cada proyecto
-    for _, fila in df_filtrado.iterrows():
+    for _, fila in df_agrupado.iterrows():
         CodeN4W_id = fila['Code']  # Usar Code
 
         # Buscar la descripción en la base de datos
