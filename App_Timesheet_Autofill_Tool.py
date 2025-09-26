@@ -284,7 +284,73 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     # Agrupar por todas las columnas excepto las de fechas y sumar (en caso de duplicados)
     groupby_columns = [col for col in df_result.columns if col not in date_columns]
     df_result = df_result.groupby(groupby_columns, as_index=False)[date_columns].sum()
-    
+
+    # Redondear horas a precisión de 0.25
+    df_result[date_columns] = df_result[date_columns].applymap(lambda x: round(x * 4) / 4)
+
+    # Validar y ajustar día por día y earning por earning
+    print("Validating hours day by day and earning by earning...")
+
+    # Crear resúmenes por día y earning para datos originales
+    original_summary = df_deltek.groupby('Earning')[date_columns].sum()
+
+    # Crear resúmenes por día y earning para datos con prorate
+    prorate_summary = df_result.groupby('Earning')[date_columns].sum()
+
+    # Revisar cada earning
+    total_adjustments = 0
+    for earning in original_summary.index:
+        if earning not in prorate_summary.index:
+            print(f"Warning: Earning {earning} not found in prorate results")
+            continue
+
+        # Revisar cada día para este earning
+        for date_col in date_columns:
+            original_hours = original_summary.loc[earning, date_col]
+            prorate_hours = prorate_summary.loc[earning, date_col]
+            difference = original_hours - prorate_hours
+
+            # Si hay diferencia significativa, ajustar
+            if abs(difference) > 0.001:  # Tolerancia para errores de punto flotante
+                print(f"Adjusting {difference:.3f} hours for Earning {earning} on {date_col}")
+
+                # Encontrar el primer proyecto con este earning en este día
+                adjustment_made = False
+                for idx in df_result.index:
+                    if (df_result.loc[idx, 'Earning'] == earning and
+                        df_result.loc[idx, date_col] > 0):
+
+                        # Aplicar el ajuste
+                        df_result.loc[idx, date_col] += difference
+
+                        # Redondear nuevamente para mantener incrementos de 0.25
+                        df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
+
+                        print(f"  → Applied to project {df_result.loc[idx, 'Code']} (was {df_result.loc[idx, date_col] - difference:.3f}h, now {df_result.loc[idx, date_col]:.3f}h)")
+                        adjustment_made = True
+                        total_adjustments += 1
+                        break
+
+                # Si no se encontró proyecto con horas > 0, buscar cualquier proyecto con este earning
+                if not adjustment_made:
+                    for idx in df_result.index:
+                        if df_result.loc[idx, 'Earning'] == earning:
+                            df_result.loc[idx, date_col] += difference
+                            df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
+
+                            print(f"  → Applied to project {df_result.loc[idx, 'Code']} (was {df_result.loc[idx, date_col] - difference:.3f}h, now {df_result.loc[idx, date_col]:.3f}h)")
+                            adjustment_made = True
+                            total_adjustments += 1
+                            break
+
+                if not adjustment_made:
+                    print(f"  → WARNING: Could not find project to adjust for Earning {earning} on {date_col}")
+
+    if total_adjustments > 0:
+        print(f"Total adjustments made: {total_adjustments}")
+    else:
+        print("No adjustments needed - all day/earning totals match perfectly")
+
     # Guardar resultado
     try:
         df_result.to_csv(output_path, index=False)
@@ -627,27 +693,76 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
             else:
                 df_base.loc[idx, 'Award ID'] = award_id
 
+            # Actualizar Category (concatenación de Code | Description)
+            df_base.loc[idx, 'Category'] = f"{CodeN4W_id} | {df_base.loc[idx, 'Description']}"
+
         elif esta_vacio(CodeN4W_id):
             # Si Code está vacío, poner todos en "0"
             df_base.loc[idx, 'Description'] = "0"
             df_base.loc[idx, 'Project ID'] = "0"
             df_base.loc[idx, 'Activity ID'] = "0"
             df_base.loc[idx, 'Award ID'] = "0"
+            df_base.loc[idx, 'Category'] = "0"
 
-    # Guardar usando openpyxl para mantener fórmulas
-    wb = load_workbook(archivo_base)
-    ws = wb['N4W-Projects']
+    # Usar win32com.client para manejar protección completa del workbook y hojas
+    password = "TimeSheet_N4W"
 
-    # Escribir los datos actualizados
-    for idx, row in df_base.iterrows():
-        fila_excel = idx + 2  # +2 porque índice empieza en 0 y hay encabezado
-        ws[f'B{fila_excel}'] = row['Description']
-        ws[f'C{fila_excel}'] = row['Project ID']
-        ws[f'D{fila_excel}'] = row['Activity ID']
-        ws[f'E{fila_excel}'] = row['Award ID']
+    # Convertir a ruta absoluta
+    archivo_base = os.path.abspath(archivo_base)
 
-    # Guardar y recalcular fórmulas
-    wb.save(archivo_base)
+    # Usar Excel COM para manejar protección
+    xl = win32com.client.Dispatch("Excel.Application")
+    xl.Visible = False
+    xl.DisplayAlerts = False
+
+    try:
+        # Abrir el workbook (si está protegido, Excel pedirá la contraseña automáticamente)
+        try:
+            wb = xl.Workbooks.Open(archivo_base, Password=password)
+        except:
+            # Si falla con contraseña, intentar sin ella
+            wb = xl.Workbooks.Open(archivo_base)
+
+        ws = wb.Worksheets('N4W-Projects')
+
+        # Verificar si la hoja está protegida y desprotegerla
+        sheet_was_protected = ws.ProtectContents
+        if sheet_was_protected:
+            ws.Unprotect(password)
+            print("Sheet unprotected successfully")
+
+        # Escribir los datos actualizados
+        for idx, row in df_base.iterrows():
+            fila_excel = idx + 2  # +2 porque índice empieza en 0 y hay encabezado
+            ws.Cells(fila_excel, 2).Value = row['Description']        # Columna B
+            ws.Cells(fila_excel, 3).Value = row['Project ID']         # Columna C
+            ws.Cells(fila_excel, 4).Value = row['Activity ID']        # Columna D
+            ws.Cells(fila_excel, 5).Value = row['Award ID']           # Columna E
+            ws.Cells(fila_excel, 6).Value = row['Category']           # Columna F
+
+        # Volver a proteger la hoja si estaba protegida
+        if sheet_was_protected:
+            ws.Protect(password)
+            print("Sheet protected again successfully")
+
+        # Guardar y cerrar
+        wb.Save()
+        wb.Close()
+        print("Database updated successfully using Excel COM")
+
+    except Exception as e:
+        print(f"Error during Excel COM operation: {e}")
+        try:
+            if 'wb' in locals():
+                wb.Close(SaveChanges=False)
+        except:
+            pass
+        raise
+    finally:
+        try:
+            xl.Quit()
+        except:
+            pass
 
     refresh_excel_formulas(archivo_base)
     print("Database updated successfully")
@@ -1614,6 +1729,9 @@ def generate_report(start_date, end_date, database_name):
 
         # Agregar y reorganizar datos
         tmp = results.groupby(by=['Date', 'Category', 'Earning'], as_index=False)['Hours'].sum()
+
+        # Redondear horas a precisión de 0.25
+        tmp['Hours'] = tmp['Hours'].apply(lambda x: round(x * 4) / 4)
         tmp = tmp.pivot(index=['Category', 'Earning'], columns='Date', values='Hours').fillna(0)
         tmp = tmp.reset_index(level='Earning')
 
