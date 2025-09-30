@@ -98,6 +98,9 @@ app_instance = None
 progress_window = None
 progress_bar = None
 
+# Variable global para control de actualización de base de datos
+database_updated = False
+
 # =============================================================================
 # FUNCIONES AUXILIARES BÁSICAS
 # =============================================================================
@@ -110,6 +113,251 @@ def create_folder(directory):
 def remove_timezone(date):
     """Convierte un datetime timezone-aware a timezone-naive."""
     return date.replace(tzinfo=None)
+
+
+# =============================================================================
+# FUNCIONES DE VALIDACIÓN DE CHROMEDRIVER
+# =============================================================================
+def get_chrome_version():
+    """
+    Obtiene la versión de Chrome instalada desde el registro de Windows.
+
+    Returns:
+        str: Versión de Chrome (ej: '140.0.7339.207') o None si no se encuentra
+    """
+    try:
+        if winreg is None:
+            print("ERROR: winreg no disponible (solo funciona en Windows)")
+            return None
+
+        # Intentar obtener la versión desde diferentes ubicaciones del registro
+        registry_paths = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon", "version"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Google\Chrome\BLBeacon", "version"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Wow6432Node\Google\Chrome\BLBeacon", "version")
+        ]
+
+        for hkey, path, value_name in registry_paths:
+            try:
+                key = winreg.OpenKey(hkey, path)
+                version, _ = winreg.QueryValueEx(key, value_name)
+                winreg.CloseKey(key)
+                print(f"Chrome version encontrada: {version}")
+                return version
+            except WindowsError:
+                continue
+
+        print("ERROR: No se pudo encontrar la versión de Chrome en el registro")
+        return None
+
+    except Exception as e:
+        print(f"ERROR al obtener versión de Chrome: {e}")
+        return None
+
+
+def get_chromedriver_version(chromedriver_path="chromedriver.exe"):
+    """
+    Obtiene la versión de ChromeDriver ejecutando el comando --version.
+
+    Args:
+        chromedriver_path (str): Ruta al ejecutable de ChromeDriver
+
+    Returns:
+        str: Versión de ChromeDriver (ej: '140.0.7339.207') o None si no existe
+    """
+    try:
+        if not os.path.exists(chromedriver_path):
+            print(f"ChromeDriver no encontrado en: {chromedriver_path}")
+            return None
+
+        # Ejecutar chromedriver --version
+        import subprocess
+        result = subprocess.run(
+            [chromedriver_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        # Parsear output: "ChromeDriver 140.0.7339.207 (xyz...)"
+        output = result.stdout.strip()
+        match = re.search(r'ChromeDriver\s+([\d.]+)', output)
+
+        if match:
+            version = match.group(1)
+            print(f"ChromeDriver version encontrada: {version}")
+            return version
+        else:
+            print(f"No se pudo parsear versión de ChromeDriver: {output}")
+            return None
+
+    except Exception as e:
+        print(f"ERROR al obtener versión de ChromeDriver: {e}")
+        return None
+
+
+def download_and_extract_chromedriver(chrome_version, chromedriver_path="chromedriver.exe"):
+    """
+    Descarga y extrae ChromeDriver compatible con la versión de Chrome.
+
+    Args:
+        chrome_version (str): Versión de Chrome (ej: '140.0.7339.207')
+        chromedriver_path (str): Ruta donde se guardará ChromeDriver
+
+    Returns:
+        bool: True si la descarga y extracción fueron exitosas, False en caso contrario
+    """
+    import zipfile
+    import tempfile
+
+    try:
+        # Construir URL de descarga
+        download_url = f"https://storage.googleapis.com/chrome-for-testing-public/{chrome_version}/win64/chromedriver-win64.zip"
+
+        print(f"Descargando ChromeDriver desde: {download_url}")
+
+        # Descargar archivo ZIP
+        response = requests.get(download_url, stream=True, timeout=30)
+        response.raise_for_status()  # Lanzar excepción si hay error HTTP
+
+        # Guardar ZIP en archivo temporal
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_zip:
+            temp_zip_path = temp_zip.name
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+
+            print("Descargando ChromeDriver...")
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    temp_zip.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        progress = (downloaded / total_size) * 100
+                        print(f"Progreso: {progress:.1f}%", end='\r')
+
+            print("\nDescarga completada.")
+
+        # Extraer ChromeDriver del ZIP
+        print("Extrayendo ChromeDriver...")
+        with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+            # El archivo está en: chromedriver-win64/chromedriver.exe
+            chromedriver_in_zip = "chromedriver-win64/chromedriver.exe"
+
+            # Extraer a directorio temporal
+            with tempfile.TemporaryDirectory() as temp_dir:
+                zip_ref.extract(chromedriver_in_zip, temp_dir)
+                extracted_path = os.path.join(temp_dir, chromedriver_in_zip)
+
+                # Eliminar ChromeDriver antiguo si existe
+                if os.path.exists(chromedriver_path):
+                    print(f"Eliminando ChromeDriver antiguo: {chromedriver_path}")
+                    os.remove(chromedriver_path)
+
+                # Copiar nuevo ChromeDriver a la ubicación final
+                print(f"Copiando ChromeDriver a: {chromedriver_path}")
+                shutil.copy2(extracted_path, chromedriver_path)
+
+        # Limpiar archivo ZIP temporal
+        os.remove(temp_zip_path)
+
+        print("ChromeDriver instalado exitosamente.")
+        return True
+
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR al descargar ChromeDriver: {e}")
+        print(f"URL de descarga: {download_url}")
+        return False
+    except zipfile.BadZipFile as e:
+        print(f"ERROR: Archivo ZIP corrupto: {e}")
+        return False
+    except Exception as e:
+        print(f"ERROR inesperado al instalar ChromeDriver: {e}")
+        traceback.print_exc()
+        return False
+
+
+def validate_and_update_chromedriver():
+    """
+    Función principal que valida ChromeDriver y lo actualiza si es necesario.
+    Esta función debe ejecutarse antes de iniciar la aplicación GUI.
+
+    Returns:
+        bool: True si ChromeDriver está listo para usar, False si hay error crítico
+    """
+    print("\n" + "="*70)
+    print("VALIDACIÓN DE CHROMEDRIVER")
+    print("="*70)
+
+    # Paso 1: Obtener versión de Chrome
+    chrome_version = get_chrome_version()
+    if chrome_version is None:
+        print("\nERROR CRÍTICO: Google Chrome no está instalado.")
+        print("Por favor, instale Google Chrome desde: https://www.google.com/chrome/")
+        messagebox.showerror(
+            "Chrome no encontrado",
+            "Google Chrome no está instalado en su sistema.\n\n"
+            "Por favor, instale Chrome desde:\n"
+            "https://www.google.com/chrome/"
+        )
+        return False
+
+    # Extraer versión major (ej: '140.0.7339.207' -> '140')
+    chrome_major = chrome_version.split('.')[0]
+
+    # Paso 2: Verificar si existe ChromeDriver
+    chromedriver_path = "chromedriver.exe"
+    chromedriver_version = get_chromedriver_version(chromedriver_path)
+
+    # Paso 3: Determinar si necesita descarga
+    needs_download = False
+
+    if chromedriver_version is None:
+        print("\nChromeDriver no encontrado. Se descargará automáticamente.")
+        needs_download = True
+    else:
+        # Comparar versión major
+        chromedriver_major = chromedriver_version.split('.')[0]
+
+        if chrome_major == chromedriver_major:
+            print(f"\n✓ ChromeDriver compatible (Chrome: {chrome_version}, ChromeDriver: {chromedriver_version})")
+            print("="*70 + "\n")
+            return True
+        else:
+            print(f"\n⚠ Versión incompatible:")
+            print(f"  Chrome: {chrome_version} (major: {chrome_major})")
+            print(f"  ChromeDriver: {chromedriver_version} (major: {chromedriver_major})")
+            print("\nSe descargará la versión compatible...")
+            needs_download = True
+
+    # Paso 4: Descargar ChromeDriver si es necesario
+    if needs_download:
+        success = download_and_extract_chromedriver(chrome_version, chromedriver_path)
+
+        if success:
+            # Verificar que la instalación fue exitosa
+            new_version = get_chromedriver_version(chromedriver_path)
+            if new_version:
+                print(f"\n✓ ChromeDriver actualizado exitosamente a versión: {new_version}")
+                print("="*70 + "\n")
+                return True
+            else:
+                print("\nERROR: ChromeDriver descargado pero no se pudo verificar.")
+                return False
+        else:
+            print("\nERROR: No se pudo descargar ChromeDriver.")
+            print(f"\nPuede descargarlo manualmente desde:")
+            print(f"https://storage.googleapis.com/chrome-for-testing-public/{chrome_version}/win64/chromedriver-win64.zip")
+
+            messagebox.showerror(
+                "Error al actualizar ChromeDriver",
+                f"No se pudo descargar ChromeDriver automáticamente.\n\n"
+                f"Por favor, descárguelo manualmente desde:\n"
+                f"https://storage.googleapis.com/chrome-for-testing-public/{chrome_version}/win64/chromedriver-win64.zip\n\n"
+                f"Extraiga chromedriver.exe a la carpeta de la aplicación."
+            )
+            return False
+
+    return True
 
 
 # =============================================================================
@@ -164,18 +412,227 @@ def get_distribution_weights(df_real: pd.DataFrame, date_columns: List[str]) -> 
     return weights
 
 
-def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, output_path: str):
+def show_project_selection_window(df_projects: pd.DataFrame, database_path: str = None) -> Dict[str, bool]:
+    """
+    Muestra ventana para que el usuario seleccione qué proyectos recibirán horas redistribuidas.
+
+    Args:
+        df_projects (pd.DataFrame): DataFrame con proyectos reales (prorate=0)
+        database_path (str): Ruta al archivo de base de datos con información de proyectos
+
+    Returns:
+        Dict[str, bool]: Diccionario {project_code: True/False} indicando selección
+                        None si el usuario cancela
+    """
+
+    # Cargar información adicional de la base de datos de proyectos
+    project_details = {}
+    try:
+        if database_path and os.path.exists(database_path):
+            df_n4w_projects = pd.read_excel(database_path, sheet_name='N4W-Projects')
+            df_tnc_projects = pd.read_excel(database_path, sheet_name='TNC-Projects')
+            df_all_projects = pd.concat([df_n4w_projects, df_tnc_projects], ignore_index=True)
+
+            for _, row in df_all_projects.iterrows():
+                project_details[row['Code']] = {
+                    'Project_Name': row.get('Description', 'N/A'),
+                    'Project_ID': row.get('Project ID', ''),
+                }
+    except Exception as e:
+        print(f"Warning: Could not load project database: {e}")
+        project_details = {}
+
+    # Obtener lista única de códigos de proyectos reales
+    unique_codes = df_projects['Code'].unique()
+
+    print(f"Creating project selection window for {len(unique_codes)} projects...")
+
+    # Crear ventana de selección
+    try:
+        selection_window = ctk.CTkToplevel()
+    except Exception as e:
+        print(f"Error creating CTkToplevel: {e}")
+        print("Attempting to create with explicit root...")
+        # Si falla, intentar crear una ventana raíz temporal
+        temp_root = ctk.CTk()
+        temp_root.withdraw()
+        selection_window = ctk.CTkToplevel(temp_root)
+
+    selection_window.title("Select Projects for Hour Redistribution")
+    selection_window.geometry("800x600")
+    selection_window.configure(fg_color=COLORS['bg_primary'])
+    selection_window.transient()
+    selection_window.grab_set()  # Hacer ventana modal
+
+    # Centrar la ventana
+    selection_window.update_idletasks()
+    x = (selection_window.winfo_screenwidth() // 2) - (800 // 2)
+    y = (selection_window.winfo_screenheight() // 2) - (600 // 2)
+    selection_window.geometry(f"800x600+{x}+{y}")
+
+    # Variable para almacenar selección del usuario
+    selection_result = {'selections': None, 'cancelled': False}
+
+    # Diccionario para almacenar variables de checkbox
+    checkbox_vars = {}
+
+    def on_continue():
+        # Recopilar selecciones
+        selections = {code: var.get() for code, var in checkbox_vars.items()}
+        selection_result['selections'] = selections
+        selection_result['cancelled'] = False
+        selection_window.destroy()
+
+    def on_cancel():
+        selection_result['selections'] = None
+        selection_result['cancelled'] = True
+        selection_window.destroy()
+
+    def select_all():
+        for var in checkbox_vars.values():
+            var.set(True)
+
+    def deselect_all():
+        for var in checkbox_vars.values():
+            var.set(False)
+
+    # Encabezado
+    header_frame = ctk.CTkFrame(selection_window, fg_color="transparent")
+    header_frame.pack(fill="x", padx=20, pady=(20, 10))
+
+    title_label = ctk.CTkLabel(
+        header_frame,
+        text="Select Projects for Redistribution",
+        font=ctk.CTkFont(size=24, weight="bold"),
+        text_color=COLORS['text_primary']
+    )
+    title_label.pack()
+
+    subtitle_label = ctk.CTkLabel(
+        header_frame,
+        text="Select which projects will receive redistributed hours. Unselected projects will keep their original hours.",
+        font=ctk.CTkFont(size=12),
+        text_color=COLORS['text_secondary']
+    )
+    subtitle_label.pack(pady=(5, 0))
+
+    # Marco de botones de selección rápida
+    quick_buttons_frame = ctk.CTkFrame(selection_window, fg_color="transparent")
+    quick_buttons_frame.pack(fill="x", padx=20, pady=(0, 10))
+
+    select_all_btn = ctk.CTkButton(
+        quick_buttons_frame,
+        text="Select All",
+        command=select_all,
+        width=120,
+        fg_color=COLORS['accent'],
+        hover_color=COLORS['accent_hover']
+    )
+    select_all_btn.pack(side="left", padx=5)
+
+    deselect_all_btn = ctk.CTkButton(
+        quick_buttons_frame,
+        text="Deselect All",
+        command=deselect_all,
+        width=120,
+        fg_color=COLORS['bg_tertiary'],
+        hover_color=COLORS['border']
+    )
+    deselect_all_btn.pack(side="left", padx=5)
+
+    # Marco de lista con checkboxes
+    list_frame = ctk.CTkScrollableFrame(
+        selection_window,
+        fg_color=COLORS['bg_secondary'],
+        corner_radius=8,
+        border_width=1,
+        border_color=COLORS['border']
+    )
+    list_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+    # Encabezados
+    headers_frame = ctk.CTkFrame(list_frame, fg_color=COLORS['bg_tertiary'])
+    headers_frame.pack(fill="x", pady=(0, 5))
+
+    ctk.CTkLabel(headers_frame, text="", width=40).grid(row=0, column=0, padx=5, pady=8)  # Checkbox column
+    ctk.CTkLabel(headers_frame, text="Code", font=ctk.CTkFont(weight="bold"), width=100).grid(row=0, column=1, padx=5, pady=8, sticky="w")
+    ctk.CTkLabel(headers_frame, text="Project Name", font=ctk.CTkFont(weight="bold"), width=300).grid(row=0, column=2, padx=5, pady=8, sticky="w")
+    ctk.CTkLabel(headers_frame, text="Project ID", font=ctk.CTkFont(weight="bold"), width=150).grid(row=0, column=3, padx=5, pady=8, sticky="w")
+
+    # Filas de proyectos con checkboxes
+    for i, code in enumerate(sorted(unique_codes)):
+        details = project_details.get(code, {})
+        project_name = details.get('Project_Name', 'N/A')
+        project_id = details.get('Project_ID', 'N/A')
+
+        row_color = COLORS['bg_primary'] if i % 2 == 0 else COLORS['bg_secondary']
+        row_frame = ctk.CTkFrame(list_frame, fg_color=row_color, corner_radius=4)
+        row_frame.pack(fill="x", pady=1)
+
+        # Checkbox (por defecto seleccionado)
+        checkbox_var = ctk.BooleanVar(value=True)
+        checkbox_vars[code] = checkbox_var
+
+        checkbox = ctk.CTkCheckBox(
+            row_frame,
+            text="",
+            variable=checkbox_var,
+            width=40,
+            fg_color=COLORS['accent'],
+            hover_color=COLORS['accent_hover']
+        )
+        checkbox.grid(row=0, column=0, padx=5, pady=8)
+
+        ctk.CTkLabel(row_frame, text=code, width=100, anchor="w").grid(row=0, column=1, padx=5, pady=8, sticky="w")
+        ctk.CTkLabel(row_frame, text=project_name, width=300, anchor="w").grid(row=0, column=2, padx=5, pady=8, sticky="w")
+        ctk.CTkLabel(row_frame, text=str(project_id), width=150, anchor="w").grid(row=0, column=3, padx=5, pady=8, sticky="w")
+
+    # Botones de acción
+    buttons_frame = ctk.CTkFrame(selection_window, fg_color="transparent")
+    buttons_frame.pack(fill="x", padx=20, pady=(10, 20))
+
+    cancel_btn = ctk.CTkButton(
+        buttons_frame,
+        text="Cancel",
+        command=on_cancel,
+        width=150,
+        fg_color=COLORS['bg_tertiary'],
+        hover_color=COLORS['border']
+    )
+    cancel_btn.pack(side="right", padx=5)
+
+    continue_btn = ctk.CTkButton(
+        buttons_frame,
+        text="Continue",
+        command=on_continue,
+        width=150,
+        fg_color=COLORS['accent'],
+        hover_color=COLORS['accent_hover']
+    )
+    continue_btn.pack(side="right", padx=5)
+
+    # Esperar a que el usuario cierre la ventana
+    selection_window.wait_window()
+
+    # Retornar resultado
+    if selection_result['cancelled']:
+        return None
+    return selection_result['selections']
+
+
+def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, output_path: str, database_path: str = None):
     """
     Redistribuye horas de proyectos virtuales a proyectos reales basado en tipos de earning.
-    
+
     Args:
         deltek_path (str): Ruta al archivo 02-Deltek.csv
         n4w_task_details_path (str): Ruta al archivo N4W_Task_Details.xlsx
         output_path (str): Ruta para archivo de salida con horas redistribuidas
+        database_path (str): Ruta al archivo de base de datos con proyectos (opcional)
     """
-    
+
     print("Starting hour redistribution process...")
-    
+
     # Cargar datos
     try:
         df_deltek = pd.read_csv(deltek_path)
@@ -183,13 +640,13 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     except Exception as e:
         print(f"Error loading Deltek data: {e}")
         return
-    
+
     # Cargar datos de prorate
     prorate_dict = load_prorate_data(n4w_task_details_path)
     if not prorate_dict:
         print("Failed to load prorate data. Exiting.")
         return
-    
+
     # Agregar información de prorate al dataframe deltek
     df_deltek['Prorate'] = df_deltek['Code'].map(prorate_dict).fillna(0).astype(int)
 
@@ -213,75 +670,103 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     df_virtual = df_deltek[df_deltek['Prorate'] == 1].copy()
     df_real = df_deltek[df_deltek['Prorate'] == 0].copy()
     df_excepted = df_deltek[df_deltek['Prorate'] == -1].copy()
-    
+
     print(f"Virtual projects: {len(df_virtual)}")
     print(f"Real projects: {len(df_real)}")
     print(f"Excepted projects: {len(df_excepted)}")
-    
+
     if len(df_real) == 0:
         print("No real projects found for redistribution")
         return
-    
-    # Inicializar dataframe resultado con proyectos reales
-    df_result = df_real.copy()
-    
+
+    # Mostrar ventana de selección de proyectos
+    print("=" * 60)
+    print("SHOWING PROJECT SELECTION WINDOW")
+    print(f"Number of real projects: {len(df_real)}")
+    print(f"Database path: {database_path}")
+    print("=" * 60)
+
+    try:
+        project_selections = show_project_selection_window(df_real, database_path)
+        print(f"Project selections returned: {project_selections}")
+    except Exception as e:
+        print(f"ERROR in show_project_selection_window: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
+    if project_selections is None:
+        print("Process cancelled by user during project selection.")
+        return
+
+    # Separar proyectos reales en dos categorías según selección del usuario:
+    # - Reales seleccionados (redistribute_target=1): reciben horas redistribuidas
+    # - Reales NO seleccionados (redistribute_target=0): mantienen horas originales
+    df_real['Redistribute_Target'] = df_real['Code'].map(project_selections).fillna(True).astype(bool)
+
+    df_real_selected = df_real[df_real['Redistribute_Target'] == True].copy()
+    df_real_not_selected = df_real[df_real['Redistribute_Target'] == False].copy()
+
+    print(f"Real projects selected for redistribution: {len(df_real_selected)}")
+    print(f"Real projects NOT selected (will keep original hours): {len(df_real_not_selected)}")
+
+    if len(df_real_selected) == 0:
+        print("No projects selected for redistribution. Exiting.")
+        return
+
+    # IMPORTANTE: Guardar horas originales de proyectos seleccionados ANTES de redistribución
+    # Esto nos permitirá calcular cuántas horas recibió cada proyecto del prorate
+    df_real_selected_original = df_real_selected.copy()
+
+    # Inicializar dataframe resultado con proyectos reales seleccionados
+    df_result = df_real_selected.copy()
+
     # Procesar cada proyecto virtual
     for idx, virtual_row in df_virtual.iterrows():
         earning_type = virtual_row['Earning']
         project_code = virtual_row['Code']
-        
+
         print(f"Processing virtual project {project_code} with Earning={earning_type}")
-        
+
         # Obtener horas a redistribuir
         hours_to_redistribute = virtual_row[date_columns].values
-        
+
         if earning_type == '1':  # Earning regular
-            # Distribuir proporcionalmente entre proyectos reales existentes
-            if len(df_real) > 0:
-                weights = get_distribution_weights(df_real, date_columns)
-                
-                # Agregar horas distribuidas a proyectos reales existentes
-                for real_idx in df_real.index:
+            # Distribuir proporcionalmente entre proyectos reales SELECCIONADOS
+            if len(df_real_selected) > 0:
+                weights = get_distribution_weights(df_real_selected, date_columns)
+
+                # Agregar horas distribuidas a proyectos reales seleccionados
+                for real_idx in df_real_selected.index:
                     weight = weights.loc[real_idx]
                     additional_hours = hours_to_redistribute * weight
-                    
+
                     # Encontrar fila correspondiente en dataframe resultado
-                    result_idx = df_result[df_result['Code'] == df_real.loc[real_idx, 'Code']].index[0]
+                    result_idx = df_result[df_result['Code'] == df_real_selected.loc[real_idx, 'Code']].index[0]
                     df_result.loc[result_idx, date_columns] += additional_hours
-        
+
         else:  # Earning no regular (H, V, etc.)
-            # Crear nuevas filas para cada proyecto real con el mismo tipo de earning
-            for real_idx in df_real.index:
-                real_project = df_real.loc[real_idx].copy()
-                
+            # Crear nuevas filas para cada proyecto real SELECCIONADO con el mismo tipo de earning
+            for real_idx in df_real_selected.index:
+                real_project = df_real_selected.loc[real_idx].copy()
+
                 # Calcular peso proporcional para este proyecto real
-                weights = get_distribution_weights(df_real, date_columns)
+                weights = get_distribution_weights(df_real_selected, date_columns)
                 weight = weights.loc[real_idx]
-                
+
                 # Crear nueva fila con tipo de earning del proyecto virtual
                 new_row = real_project.copy()
                 new_row['Earning'] = earning_type
-                
+
                 # Asignar horas proporcionales
                 distributed_hours = hours_to_redistribute * weight
                 new_row[date_columns] = distributed_hours
-                
+
                 # Agregar nueva fila al resultado
                 df_result = pd.concat([df_result, new_row.to_frame().T], ignore_index=True)
-    
-    # Remover columna prorate del resultado final
-    if 'Prorate' in df_result.columns:
-        df_result = df_result.drop('Prorate', axis=1)
-    
-    # Agregar proyectos exceptuados al resultado final (sin modificaciones)
-    if len(df_excepted) > 0:
-        # Remover columna prorate de proyectos exceptuados antes de agregar
-        if 'Prorate' in df_excepted.columns:
-            df_excepted = df_excepted.drop('Prorate', axis=1)
-        df_result = pd.concat([df_result, df_excepted], ignore_index=True)
-        print(f"Added {len(df_excepted)} excepted projects to final result")
 
     # Agrupar por todas las columnas excepto las de fechas y sumar (en caso de duplicados)
+    # IMPORTANTE: Esto se hace ANTES de agregar proyectos no seleccionados
     groupby_columns = [col for col in df_result.columns if col not in date_columns]
     df_result = df_result.groupby(groupby_columns, as_index=False)[date_columns].sum()
 
@@ -289,12 +774,16 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     df_result[date_columns] = df_result[date_columns].applymap(lambda x: round(x * 4) / 4)
 
     # Validar y ajustar día por día y earning por earning
-    print("Validating hours day by day and earning by earning...")
+    # IMPORTANTE: Los ajustes se aplican SOLO a proyectos seleccionados (antes de agregar no seleccionados)
+    print("Validating hours day by day and earning by earning (only on selected projects)...")
 
     # Crear resúmenes por día y earning para datos originales
-    original_summary = df_deltek.groupby('Earning')[date_columns].sum()
+    # IMPORTANTE: Solo considerar proyectos que participan en redistribución
+    # (virtuales + reales seleccionados, excluyendo reales NO seleccionados y exceptuados)
+    df_original_for_comparison = pd.concat([df_virtual, df_real_selected], ignore_index=True)
+    original_summary = df_original_for_comparison.groupby('Earning')[date_columns].sum()
 
-    # Crear resúmenes por día y earning para datos con prorate
+    # Crear resúmenes por día y earning para datos con prorate (solo proyectos seleccionados)
     prorate_summary = df_result.groupby('Earning')[date_columns].sum()
 
     # Revisar cada earning
@@ -314,42 +803,143 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
             if abs(difference) > 0.001:  # Tolerancia para errores de punto flotante
                 print(f"Adjusting {difference:.3f} hours for Earning {earning} on {date_col}")
 
-                # Encontrar el primer proyecto con este earning en este día
+                # Obtener lista de proyectos con este earning
+                earning_projects = df_result[df_result['Earning'] == earning].copy()
+
+                if difference > 0:
+                    # AGREGAR horas: ordenar por horas totales (descendente) y aplicar al proyecto con más horas
+                    earning_projects = earning_projects.sort_values(by=date_col, ascending=False)
+                else:
+                    # RESTAR horas: ordenar por DIFERENCIA (horas recibidas del prorate), descendente
+                    # Calcular diferencia = horas actuales - horas originales para cada proyecto
+                    prorate_diffs = {}  # Diccionario para guardar diferencias
+
+                    for idx in earning_projects.index:
+                        project_code = df_result.loc[idx, 'Code']
+                        current_hours_project = df_result.loc[idx, date_col]
+
+                        # Buscar horas originales de este proyecto (antes de redistribución)
+                        original_match = df_real_selected_original[
+                            (df_real_selected_original['Code'] == project_code) &
+                            (df_real_selected_original['Earning'] == earning)
+                        ]
+
+                        if len(original_match) > 0:
+                            original_hours_project = original_match[date_col].values[0]
+                        else:
+                            # Si no existe en original, significa que es una fila nueva creada por prorate
+                            original_hours_project = 0
+
+                        # Diferencia = cuántas horas recibió este proyecto del prorate
+                        prorate_diff_value = current_hours_project - original_hours_project
+                        prorate_diffs[idx] = prorate_diff_value
+                        earning_projects.loc[idx, 'prorate_diff'] = prorate_diff_value
+
+                        print(f"    DEBUG: Project {project_code} - Original: {original_hours_project:.2f}h, Current: {current_hours_project:.2f}h, Diff: {prorate_diff_value:.2f}h")
+
+                    # Filtrar solo proyectos que recibieron horas (prorate_diff > 0)
+                    earning_projects = earning_projects[earning_projects['prorate_diff'] > 0.001]
+
+                    if len(earning_projects) == 0:
+                        print(f"    WARNING: No projects with positive prorate_diff found for Earning {earning} on {date_col}")
+
+                    # Ordenar por diferencia (mayor a menor) - quitarle primero a quien más recibió
+                    earning_projects = earning_projects.sort_values(by='prorate_diff', ascending=False)
+
+                remaining_difference = difference
                 adjustment_made = False
-                for idx in df_result.index:
-                    if (df_result.loc[idx, 'Earning'] == earning and
-                        df_result.loc[idx, date_col] > 0):
 
-                        # Aplicar el ajuste
-                        df_result.loc[idx, date_col] += difference
+                # Iterar sobre proyectos ordenados
+                for idx in earning_projects.index:
+                    current_hours = df_result.loc[idx, date_col]
+                    project_code = df_result.loc[idx, 'Code']
 
-                        # Redondear nuevamente para mantener incrementos de 0.25
-                        df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
-
-                        print(f"  → Applied to project {df_result.loc[idx, 'Code']} (was {df_result.loc[idx, date_col] - difference:.3f}h, now {df_result.loc[idx, date_col]:.3f}h)")
-                        adjustment_made = True
-                        total_adjustments += 1
+                    if abs(remaining_difference) < 0.001:
+                        # Ya se completó el ajuste
                         break
 
-                # Si no se encontró proyecto con horas > 0, buscar cualquier proyecto con este earning
-                if not adjustment_made:
-                    for idx in df_result.index:
-                        if df_result.loc[idx, 'Earning'] == earning:
-                            df_result.loc[idx, date_col] += difference
+                    if remaining_difference > 0:
+                        # AGREGAR horas: aplicar todo al proyecto con más horas
+                        df_result.loc[idx, date_col] += remaining_difference
+                        df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
+
+                        print(f"  → Added {remaining_difference:.3f}h to project {project_code} (was {current_hours:.3f}h, now {df_result.loc[idx, date_col]:.3f}h)")
+                        adjustment_made = True
+                        total_adjustments += 1
+                        remaining_difference = 0
+                        break
+
+                    else:
+                        # RESTAR horas: verificar diferencia disponible para evitar quitar horas originales
+                        hours_to_subtract = abs(remaining_difference)
+
+                        # Obtener cuántas horas recibió este proyecto del prorate
+                        if difference < 0:
+                            # Estamos en modo resta, usar el diccionario prorate_diffs
+                            prorate_diff = prorate_diffs.get(idx, 0) if 'prorate_diffs' in locals() else 0
+                        else:
+                            # En modo suma, no aplica
+                            prorate_diff = current_hours
+
+                        if prorate_diff >= hours_to_subtract:
+                            # Proyecto recibió suficientes horas del prorate: restar todo lo necesario
+                            df_result.loc[idx, date_col] -= hours_to_subtract
                             df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
 
-                            print(f"  → Applied to project {df_result.loc[idx, 'Code']} (was {df_result.loc[idx, date_col] - difference:.3f}h, now {df_result.loc[idx, date_col]:.3f}h)")
+                            print(f"  → Subtracted {hours_to_subtract:.3f}h from project {project_code} (was {current_hours:.3f}h, now {df_result.loc[idx, date_col]:.3f}h, received {prorate_diff:.3f}h from prorate)")
                             adjustment_made = True
                             total_adjustments += 1
+                            remaining_difference = 0
                             break
 
-                if not adjustment_made:
-                    print(f"  → WARNING: Could not find project to adjust for Earning {earning} on {date_col}")
+                        elif prorate_diff > 0:
+                            # Proyecto recibió menos horas que las necesarias: restar solo lo que recibió del prorate
+                            df_result.loc[idx, date_col] -= prorate_diff
+                            df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
+                            remaining_difference += prorate_diff  # Actualizar diferencia pendiente
+
+                            print(f"  → Subtracted {prorate_diff:.3f}h from project {project_code} (was {current_hours:.3f}h, now {df_result.loc[idx, date_col]:.3f}h) - {abs(remaining_difference):.3f}h still pending")
+                            adjustment_made = True
+                            total_adjustments += 1
+                            # Continuar con siguiente proyecto
+
+                        # Si prorate_diff <= 0, este proyecto no recibió horas, saltar al siguiente
+
+                if not adjustment_made or abs(remaining_difference) > 0.001:
+                    if not adjustment_made:
+                        print(f"  → WARNING: Could not find project to adjust for Earning {earning} on {date_col}")
+                    else:
+                        print(f"  → WARNING: Partial adjustment - could not subtract remaining {abs(remaining_difference):.3f}h for Earning {earning} on {date_col}")
 
     if total_adjustments > 0:
         print(f"Total adjustments made: {total_adjustments}")
     else:
         print("No adjustments needed - all day/earning totals match perfectly")
+
+    # AHORA agregar proyectos reales NO seleccionados al resultado final (con horas originales)
+    # IMPORTANTE: Esto se hace DESPUÉS de todos los ajustes para que no se les asignen horas
+    if len(df_real_not_selected) > 0:
+        # Remover columnas auxiliares antes de agregar
+        if 'Prorate' in df_real_not_selected.columns:
+            df_real_not_selected = df_real_not_selected.drop('Prorate', axis=1)
+        if 'Redistribute_Target' in df_real_not_selected.columns:
+            df_real_not_selected = df_real_not_selected.drop('Redistribute_Target', axis=1)
+        df_result = pd.concat([df_result, df_real_not_selected], ignore_index=True)
+        print(f"Added {len(df_real_not_selected)} non-selected projects with original hours to final result")
+
+    # Agregar proyectos exceptuados al resultado final (sin modificaciones)
+    if len(df_excepted) > 0:
+        # Remover columna prorate de proyectos exceptuados antes de agregar
+        if 'Prorate' in df_excepted.columns:
+            df_excepted = df_excepted.drop('Prorate', axis=1)
+        df_result = pd.concat([df_result, df_excepted], ignore_index=True)
+        print(f"Added {len(df_excepted)} excepted projects to final result")
+
+    # Remover columnas auxiliares del resultado final
+    if 'Prorate' in df_result.columns:
+        df_result = df_result.drop('Prorate', axis=1)
+    if 'Redistribute_Target' in df_result.columns:
+        df_result = df_result.drop('Redistribute_Target', axis=1)
 
     # Guardar resultado
     try:
@@ -359,16 +949,26 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
         
         # Imprimir resumen
         virtual_total = df_virtual[date_columns].sum().sum()
-        real_original_total = df_real[date_columns].sum().sum()
+        real_selected_total = df_real_selected[date_columns].sum().sum()
+        real_not_selected_total = df_real_not_selected[date_columns].sum().sum() if len(df_real_not_selected) > 0 else 0
         excepted_total = df_excepted[date_columns].sum().sum() if len(df_excepted) > 0 else 0
+        original_total = df_deltek[date_columns].sum().sum()
         final_total = df_result[date_columns].sum().sum()
 
-        print(f"\nSummary:")
-        print(f"- Virtual projects total hours: {virtual_total:.2f}")
-        print(f"- Real projects original hours: {real_original_total:.2f}")
-        print(f"- Excepted projects hours (unchanged): {excepted_total:.2f}")
-        print(f"- Final total hours: {final_total:.2f}")
-        print(f"- Hours redistributed: {virtual_total:.2f}")
+        print(f"\n{'='*60}")
+        print(f"REDISTRIBUTION SUMMARY")
+        print(f"{'='*60}")
+        print(f"ORIGINAL (before redistribution):")
+        print(f"  - Virtual projects (to redistribute): {virtual_total:.2f}h")
+        print(f"  - Real projects (selected): {real_selected_total:.2f}h")
+        print(f"  - Real projects (NOT selected): {real_not_selected_total:.2f}h")
+        print(f"  - Excepted projects: {excepted_total:.2f}h")
+        print(f"  - TOTAL ORIGINAL: {original_total:.2f}h")
+        print(f"\nFINAL (after redistribution):")
+        print(f"  - TOTAL FINAL: {final_total:.2f}h")
+        print(f"  - Difference: {final_total - original_total:.2f}h")
+        print(f"  - Balance: {'✓ CONSERVED' if abs(final_total - original_total) < 0.1 else '✗ NOT CONSERVED'}")
+        print(f"{'='*60}")
         
     except Exception as e:
         print(f"Error saving output file: {e}")
@@ -485,7 +1085,7 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
 
         subtitle_label = ctk.CTkLabel(
             header_frame,
-            text="Review the changes before continuing with Deltek automation",
+            text="Review hour redistribution by project. Total hours are conserved - only distribution changes.",
             font=ctk.CTkFont(size=14),
             text_color=COLORS['text_secondary']
         )
@@ -551,12 +1151,16 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
         original_total = sum(data['Without_Prorate'] for data in comparison_data)
         prorated_total = sum(data['With_Prorate'] for data in comparison_data)
 
-        summary_text = f"Total Hours - Original: {original_total:.1f} | After Prorate: {prorated_total:.1f} | Conservation: {'✓' if abs(original_total - prorated_total) < 0.01 else '✗'}"
+        hours_match = abs(original_total - prorated_total) < 0.01
+        match_symbol = '✓' if hours_match else '✗'
+        match_color = COLORS['success'] if hours_match else COLORS['warning']
+
+        summary_text = f"TOTAL HOURS - Original: {original_total:.2f}h | After Redistribution: {prorated_total:.2f}h | Balance: {match_symbol}"
         ctk.CTkLabel(
             summary_frame,
             text=summary_text,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS['text_primary']
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=match_color
         ).pack(pady=10)
 
         # Leyenda
@@ -629,11 +1233,21 @@ def refresh_excel_formulas(file_path):
 def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
     """
     Actualiza la base de datos local con información del archivo de N4W de Box.
-    
+    Solo se ejecuta una vez por sesión para evitar actualizaciones duplicadas.
+
     Args:
         archivo_base (str): Ruta del archivo de base de datos local
         archivo_fuente (str): Ruta del archivo fuente descargado de Box
     """
+    global database_updated  # Declarar global al inicio de la función
+
+    # Verificar si ya se actualizó la base de datos en esta sesión
+    if database_updated:
+        print("Database already updated in this session. Skipping update.")
+        return
+
+    print("Updating database for the first time in this session...")
+
     # Leer los archivos
     df_base = pd.read_excel(archivo_base, sheet_name='N4W-Projects')
     df_fuente = pd.read_excel(archivo_fuente)
@@ -766,6 +1380,19 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
 
     refresh_excel_formulas(archivo_base)
     print("Database updated successfully")
+
+    # Marcar que la base de datos ya fue actualizada en esta sesión
+    database_updated = True
+
+
+def reset_database_update_flag():
+    """
+    Resetea la bandera de actualización de base de datos.
+    Útil para forzar una nueva actualización si es necesario.
+    """
+    global database_updated
+    database_updated = False
+    print("Database update flag has been reset. Next update will proceed.")
 
 
 def Download_DataBase_N4W_Box(url_box, salida):
@@ -1827,7 +2454,7 @@ def fill_deltek(position, login_id, password, database_name, prorate=False,
             output_file = os.path.join(ProjectPath, '03-Deltek_Reallocation.csv')
 
             # Run redistribution
-            redistribute_hours_by_earning(FileTimeDeltek, PathDB_N4W_Box, output_file)
+            redistribute_hours_by_earning(FileTimeDeltek, PathDB_N4W_Box, output_file, database_name)
 
             # Show comparison window and get user confirmation
             user_approved = show_prorate_comparison_window(
@@ -2987,5 +3614,15 @@ class TimesheetApp:
 # PUNTO DE ENTRADA
 # =============================================================================
 if __name__ == "__main__":
+    # Validar y actualizar ChromeDriver antes de iniciar la GUI
+    chromedriver_ready = validate_and_update_chromedriver()
+
+    if not chromedriver_ready:
+        print("\nNo se puede iniciar la aplicación sin ChromeDriver compatible.")
+        print("Por favor, resuelva el problema e intente nuevamente.")
+        input("\nPresione Enter para salir...")
+        exit(1)
+
+    # Iniciar la aplicación solo si ChromeDriver está listo
     app = TimesheetApp()
     app.run()
