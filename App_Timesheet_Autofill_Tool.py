@@ -2526,93 +2526,234 @@ def fill_deltek(position, login_id, password, database_name, prorate=False,
         ).click()
         time.sleep(0.5)
 
-        # Scripts para navegación horizontal
-        scroll_script = """
-            let scroller = document.getElementById('udtScroller');
-            let scrollContent = document.getElementById('udtScrollerContent');
-            if (scroller && scrollContent) {
-                let maxScrollLeft = scrollContent.offsetWidth - scroller.offsetWidth;
-                let scrollAmount = maxScrollLeft * arguments[0];
-                scroller.scrollLeft = scrollAmount;
+        # Pausa para verificación de mes
+        messagebox.showinfo(
+            "Month Verification",
+            "IMPORTANT: Deltek automatically changes to the current month.\n\n"
+            "If you need to fill a timesheet for a PREVIOUS month:\n"
+            "1. Manually navigate to the correct month in Deltek\n"
+            "2. Click OK to continue with automatic filling\n\n"
+            "If you are filling the CURRENT month, just click OK."
+        )
+
+        # Script para centrar elemento manejando scrolls verticales y horizontales de Deltek
+        scroll_into_view_script = """
+            var element = document.getElementById(arguments[0]);
+            if (element) {
+                // Primero usar scrollIntoView nativo para posicionamiento general
+                element.scrollIntoView({behavior: 'instant', block: 'center', inline: 'center'});
+
+                // Ajustar scrollers personalizados de Deltek si existen
+                var vertScroller = document.getElementById('vertScroller');
+                var hrsScroller = document.getElementById('hrsScroller');
+                var udtScroller = document.getElementById('udtScroller');
+
+                // Ajustar scroll vertical si existe
+                if (vertScroller) {
+                    var elementTop = element.offsetTop;
+                    var scrollerHeight = vertScroller.offsetHeight;
+                    var vertScrollerContent = document.getElementById('vertScrollerContent');
+
+                    if (vertScrollerContent) {
+                        var maxScroll = vertScrollerContent.offsetHeight - scrollerHeight;
+                        var targetScroll = elementTop - (scrollerHeight / 2);
+                        targetScroll = Math.max(0, Math.min(targetScroll, maxScroll));
+                        vertScroller.scrollTop = targetScroll;
+                    }
+                }
+
+                // Ajustar scroll horizontal dependiendo del tipo de elemento
+                var elementId = element.id;
+
+                // Si es celda de horas (hrs*), usar hrsScroller
+                if (elementId.startsWith('hrs') && hrsScroller) {
+                    var elementLeft = element.offsetLeft;
+                    var scrollerWidth = hrsScroller.offsetWidth;
+                    var hrsScrollerContent = document.getElementById('hrsScrollerContent');
+
+                    if (hrsScrollerContent) {
+                        var maxScrollH = hrsScrollerContent.offsetWidth - scrollerWidth;
+                        var targetScrollH = elementLeft - (scrollerWidth / 2);
+                        targetScrollH = Math.max(0, Math.min(targetScrollH, maxScrollH));
+                        hrsScroller.scrollLeft = targetScrollH;
+                    }
+                }
+                // Si es celda de datos (udt*), usar udtScroller
+                else if (elementId.startsWith('udt') && udtScroller) {
+                    var elementLeft = element.offsetLeft;
+                    var scrollerWidth = udtScroller.offsetWidth;
+                    var udtScrollerContent = document.getElementById('udtScrollerContent');
+
+                    if (udtScrollerContent) {
+                        var maxScrollH = udtScrollerContent.offsetWidth - scrollerWidth;
+                        var targetScrollH = elementLeft - (scrollerWidth / 2);
+                        targetScrollH = Math.max(0, Math.min(targetScrollH, maxScrollH));
+                        udtScroller.scrollLeft = targetScrollH;
+                    }
+                }
+
+                return true;
             }
+            return false;
         """
 
-        reset_script = """
-            let scroller = document.getElementById('udtScroller');
-            if (scroller) {
-                scroller.scrollLeft = 0;
-                scroller.scrollTop = 0;
+        # Script para horas - scroll horizontal nativo + scroll vertical manual
+        scroll_hrs_script = """
+            var element = document.getElementById(arguments[0]);
+            if (element) {
+                // ScrollIntoView nativo para posicionamiento base (maneja horizontal)
+                element.scrollIntoView({behavior: 'instant', block: 'center', inline: 'center'});
+
+                // Ajuste MANUAL de vertScroller (necesario para Deltek)
+                var vertScroller = document.getElementById('vertScroller');
+                if (vertScroller) {
+                    var elementTop = element.offsetTop;
+                    var scrollerHeight = vertScroller.offsetHeight;
+                    var vertScrollerContent = document.getElementById('vertScrollerContent');
+
+                    if (vertScrollerContent) {
+                        var maxScroll = vertScrollerContent.offsetHeight - scrollerHeight;
+                        var targetScroll = elementTop - (scrollerHeight / 2);
+                        targetScroll = Math.max(0, Math.min(targetScroll, maxScroll));
+                        vertScroller.scrollTop = targetScroll;
+                    }
+                }
+
+                // NO tocar hrsScroller manualmente - dejar que scrollIntoView lo maneje
+
+                return true;
             }
+            return false;
         """
+
+        # Script para ajustar SOLO scroll vertical (para filas individuales)
+        scroll_vertical_only_script = """
+            var element = document.getElementById(arguments[0]);
+            if (element) {
+                var vertScroller = document.getElementById('vertScroller');
+
+                // Si existe vertScroller, usarlo
+                if (vertScroller) {
+                    var elementTop = element.offsetTop;
+                    var scrollerHeight = vertScroller.offsetHeight;
+                    var vertScrollerContent = document.getElementById('vertScrollerContent');
+
+                    if (vertScrollerContent) {
+                        var maxScroll = vertScrollerContent.offsetHeight - scrollerHeight;
+                        var targetScroll = elementTop - (scrollerHeight / 2);
+                        targetScroll = Math.max(0, Math.min(targetScroll, maxScroll));
+                        vertScroller.scrollTop = targetScroll;
+                    }
+                }
+                // Si no existe vertScroller, usar scrollIntoView nativo solo para vertical
+                // IMPORTANTE: inline: 'nearest' previene que se mueva el scroll horizontal
+                else {
+                    element.scrollIntoView({behavior: 'instant', block: 'nearest', inline: 'nearest'});
+                }
+                return true;
+            }
+            return false;
+        """
+
 
         # Llenar datos del proyecto
         for i in range(len(deltek_data)):
             # Project ID
-            WebDriverWait(driver, wait_time).until(
-                EC.element_to_be_clickable((By.ID, f"udt{i + position}_1"))
-            ).click()
+            element_id = f"udt{i + position}_1"
+            element = WebDriverWait(driver, wait_time).until(
+                EC.presence_of_element_located((By.ID, element_id))
+            )
+            driver.execute_script(scroll_into_view_script, element_id)
+            time.sleep(0.1)
+            element.click()
             WebDriverWait(driver, wait_time).until(
                 EC.presence_of_element_located((By.ID, "editor"))
             ).send_keys(deltek_data["Project ID"].iloc[i])
 
-            # Award ID
-            driver.execute_script(scroll_script, 0.2)
-            WebDriverWait(driver, wait_time).until(
-                EC.element_to_be_clickable((By.ID, f"udt{i + position}_3"))
-            ).click()
-
-            driver.execute_script(scroll_script, 0.3)
-            WebDriverWait(driver, wait_time).until(
-                EC.element_to_be_clickable((By.ID, f"udt{i + position}_4"))
-            ).click()
-            WebDriverWait(driver, wait_time).until(
+            # Award ID - campo 3 (skip) y campo 4 (llenar)
+            element_id = f"udt{i + position}_4"
+            element = WebDriverWait(driver, wait_time).until(
+                EC.presence_of_element_located((By.ID, element_id))
+            )
+            driver.execute_script(scroll_into_view_script, element_id)
+            time.sleep(0.1)
+            element.click()
+            editor = WebDriverWait(driver, wait_time).until(
                 EC.presence_of_element_located((By.ID, "editor"))
-            ).clear()
-            WebDriverWait(driver, wait_time).until(
-                EC.presence_of_element_located((By.ID, "editor"))
-            ).send_keys(str(deltek_data["Award ID"].iloc[i]))
+            )
+            editor.clear()
+            editor.send_keys(str(deltek_data["Award ID"].iloc[i]))
 
             # Activity ID
-            driver.execute_script(scroll_script, 0.4)
-            WebDriverWait(driver, wait_time).until(
-                EC.element_to_be_clickable((By.ID, f"udt{i + position}_5"))
-            ).click()
-            WebDriverWait(driver, wait_time).until(
-                EC.presence_of_element_located((By.ID, "editor"))
-            ).clear()
-            WebDriverWait(driver, wait_time).until(
-                EC.presence_of_element_located((By.ID, "editor"))
-            ).send_keys(str(deltek_data["Activity ID"].iloc[i]))
+            element_id = f"udt{i + position}_5"
+            element = WebDriverWait(driver, wait_time).until(
+                EC.presence_of_element_located((By.ID, element_id))
+            )
+            driver.execute_script(scroll_into_view_script, element_id)
             time.sleep(0.1)
+            element.click()
+            editor = WebDriverWait(driver, wait_time).until(
+                EC.presence_of_element_located((By.ID, "editor"))
+            )
+            editor.clear()
+            editor.send_keys(str(deltek_data["Activity ID"].iloc[i]))
 
             # Earning Code
-            driver.execute_script(scroll_script, 0.5)
-            WebDriverWait(driver, wait_time).until(
-                EC.element_to_be_clickable((By.ID, f"udt{i + position}_6"))
-            ).click()
-            WebDriverWait(driver, wait_time).until(
-                EC.presence_of_element_located((By.ID, "editor"))
-            ).clear()
-            WebDriverWait(driver, wait_time).until(
-                EC.presence_of_element_located((By.ID, "editor"))
-            ).send_keys(str(deltek_data["Earning"].iloc[i]))
+            element_id = f"udt{i + position}_6"
+            element = WebDriverWait(driver, wait_time).until(
+                EC.presence_of_element_located((By.ID, element_id))
+            )
+            driver.execute_script(scroll_into_view_script, element_id)
             time.sleep(0.1)
+            element.click()
+            editor = WebDriverWait(driver, wait_time).until(
+                EC.presence_of_element_located((By.ID, "editor"))
+            )
+            editor.clear()
+            editor.send_keys(str(deltek_data["Earning"].iloc[i]))
 
-            driver.execute_script(reset_script)
+        # Script para cerrar el editor explícitamente
+        close_editor_script = """
+            var editor = document.getElementById('editor');
+            if (editor) {
+                editor.blur();
+                // Forzar que Deltek procese el cierre
+                var event = new Event('blur', { bubbles: true });
+                editor.dispatchEvent(event);
+            }
+        """
 
-        # Llenar horas
+        # Llenar horas - scroll horizontal solo una vez por columna
         for j in range(value.shape[1]):
             for i in range(len(deltek_data)):
-                WebDriverWait(driver, wait_time).until(
-                    EC.element_to_be_clickable((By.ID, f"hrs{i + position}_{j}"))
-                ).click()
-                WebDriverWait(driver, wait_time).until(
+                element_id = f"hrs{i + position}_{j}"
+                element = WebDriverWait(driver, wait_time).until(
+                    EC.presence_of_element_located((By.ID, element_id))
+                )
+
+                # Solo hacer scroll en la PRIMERA celda de cada columna
+                if i == 0:
+                    # Primera celda: scroll completo usando script específico para horas
+                    driver.execute_script(scroll_hrs_script, element_id)
+                    time.sleep(0.2)
+
+                # Para todas las celdas (incluyendo la primera después del scroll)
+                element.click()
+                editor = WebDriverWait(driver, wait_time).until(
                     EC.presence_of_element_located((By.ID, "editor"))
-                ).clear()
-                WebDriverWait(driver, wait_time).until(
-                    EC.presence_of_element_located((By.ID, "editor"))
-                ).send_keys(str(value.iloc[i, j]))
-                time.sleep(0.05)
+                )
+                editor.clear()
+                editor.send_keys(str(value.iloc[i, j]))
+
+                # Cerrar el editor SOLO si no es la última fila de la columna
+                # (evita que se devuelva al inicio al cambiar de columna)
+                if i < len(deltek_data) - 1:
+                    driver.execute_script(close_editor_script)
+                    time.sleep(0.05)
+                else:
+                    # Última fila: solo esperar un momento sin cerrar el editor
+                    # El scroll de la siguiente columna lo cerrará automáticamente
+                    time.sleep(0.05)
 
         print("Deltek process completed")
         messagebox.showinfo("Completed", "Deltek process successfully completed.")
