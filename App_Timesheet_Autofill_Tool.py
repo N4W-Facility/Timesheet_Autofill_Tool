@@ -98,8 +98,64 @@ app_instance = None
 progress_window = None
 progress_bar = None
 
-# Variable global para control de actualización de base de datos
-database_updated = False
+# =============================================================================
+# CLASE TOOLTIP
+# =============================================================================
+class ToolTip:
+    """
+    Clase para crear tooltips (mensajes emergentes) en CustomTkinter.
+    Muestra un mensaje cuando el usuario pasa el mouse sobre un widget.
+    """
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        self.widget.bind("<Enter>", self.show_tooltip)
+        self.widget.bind("<Leave>", self.hide_tooltip)
+
+    def show_tooltip(self, event=None):
+        """Muestra el tooltip."""
+        if self.tooltip_window or not self.text:
+            return
+
+        # Obtener posición del widget
+        x = self.widget.winfo_rootx() + 25
+        y = self.widget.winfo_rooty() + 25
+
+        # Crear ventana emergente
+        self.tooltip_window = tk.Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.wm_geometry(f"+{x}+{y}")
+
+        # Crear frame con el mensaje
+        frame = tk.Frame(
+            self.tooltip_window,
+            background=COLORS['bg_tertiary'],
+            borderwidth=1,
+            relief="solid"
+        )
+        frame.pack()
+
+        # Crear label con el texto
+        label = tk.Label(
+            frame,
+            text=self.text,
+            justify=tk.LEFT,
+            background=COLORS['bg_tertiary'],
+            foreground=COLORS['text_primary'],
+            relief=tk.FLAT,
+            borderwidth=0,
+            font=("Segoe UI", 10),
+            padx=8,
+            pady=6
+        )
+        label.pack()
+
+    def hide_tooltip(self, event=None):
+        """Oculta el tooltip."""
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
 
 # =============================================================================
 # FUNCIONES AUXILIARES BÁSICAS
@@ -1004,11 +1060,34 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
 
                 # Crear diccionario con información del proyecto usando Code como clave
                 for _, row in df_projects.iterrows():
+                    # Convertir Activity ID a entero (sin decimales)
+                    activity_id = row.get('Activity ID', '')
+                    if pd.notna(activity_id) and activity_id != '':
+                        try:
+                            activity_id = str(int(float(activity_id)))
+                        except (ValueError, TypeError):
+                            activity_id = str(activity_id)
+                    else:
+                        activity_id = 'N/A'
+
+                    # Project ID y Award ID ya vienen como strings (pueden tener letras)
+                    project_id = row.get('Project ID', 'N/A')
+                    if pd.notna(project_id) and project_id != '':
+                        project_id = str(project_id)
+                    else:
+                        project_id = 'N/A'
+
+                    award_id = row.get('Award ID', 'N/A')
+                    if pd.notna(award_id) and award_id != '':
+                        award_id = str(award_id)
+                    else:
+                        award_id = 'N/A'
+
                     project_details[row['Code']] = {
                         'Project_Name': row.get('Description', 'N/A'),
-                        'Project_ID': row.get('Project ID', ''),
-                        'Award_ID': row.get('Award ID', ''),
-                        'Activity_Code': row.get('Activity ID', '')
+                        'Project_ID': project_id,
+                        'Award_ID': award_id,
+                        'Activity_Code': activity_id
                     }
             else:
                 print(f"Warning: Database path not provided or file not found: {database_path}")
@@ -1213,6 +1292,118 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
         return True
 
 # =============================================================================
+# FUNCIÓN PARA MOSTRAR PROYECTOS ELIMINADOS
+# =============================================================================
+def show_removed_projects_window(proyectos_a_eliminar):
+    """
+    Muestra una ventana con scroll que lista los proyectos eliminados.
+
+    Args:
+        proyectos_a_eliminar (list): Lista de diccionarios con info de proyectos eliminados
+    """
+    # Crear ventana
+    window = ctk.CTkToplevel()
+    window.title("Projects Removed from Database")
+    window.geometry("700x500")
+    window.configure(fg_color=COLORS['bg_primary'])
+
+    # Centrar la ventana
+    window.update_idletasks()
+    x = (window.winfo_screenwidth() // 2) - (700 // 2)
+    y = (window.winfo_screenheight() // 2) - (500 // 2)
+    window.geometry(f"700x500+{x}+{y}")
+
+    # Hacer ventana modal
+    window.transient()
+    window.grab_set()
+
+    # Encabezado
+    header_frame = ctk.CTkFrame(window, fg_color="transparent")
+    header_frame.pack(fill="x", padx=20, pady=(20, 10))
+
+    title_label = ctk.CTkLabel(
+        header_frame,
+        text="Projects Removed from Database",
+        font=ctk.CTkFont(size=20, weight="bold"),
+        text_color=COLORS['text_primary']
+    )
+    title_label.pack()
+
+    subtitle_label = ctk.CTkLabel(
+        header_frame,
+        text=f"Total removed: {len(proyectos_a_eliminar)} project(s)",
+        font=ctk.CTkFont(size=13),
+        text_color=COLORS['text_secondary']
+    )
+    subtitle_label.pack(pady=(5, 0))
+
+    # Frame con scroll para la lista de proyectos
+    scrollable_frame = ctk.CTkScrollableFrame(
+        window,
+        fg_color=COLORS['bg_secondary'],
+        corner_radius=8,
+        border_width=1,
+        border_color=COLORS['border']
+    )
+    scrollable_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+    # Lista de proyectos eliminados
+    for i, proyecto in enumerate(proyectos_a_eliminar):
+        # Frame para cada proyecto
+        project_frame = ctk.CTkFrame(
+            scrollable_frame,
+            fg_color=COLORS['bg_tertiary'],
+            corner_radius=6
+        )
+        project_frame.pack(fill="x", padx=5, pady=5)
+
+        # Código del proyecto
+        code_label = ctk.CTkLabel(
+            project_frame,
+            text=f"• {proyecto['code']}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COLORS['warning'],
+            anchor="w"
+        )
+        code_label.pack(fill="x", padx=15, pady=(10, 2))
+
+        # Descripción
+        desc_label = ctk.CTkLabel(
+            project_frame,
+            text=proyecto['description'],
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS['text_primary'],
+            anchor="w"
+        )
+        desc_label.pack(fill="x", padx=30, pady=2)
+
+        # Razón
+        reason_label = ctk.CTkLabel(
+            project_frame,
+            text=f"Reason: {proyecto['reason']}",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS['text_secondary'],
+            anchor="w"
+        )
+        reason_label.pack(fill="x", padx=30, pady=(2, 10))
+
+    # Botón OK
+    ok_button = ctk.CTkButton(
+        window,
+        text="OK",
+        command=window.destroy,
+        width=100,
+        height=36,
+        font=ctk.CTkFont(size=13, weight="bold"),
+        fg_color=COLORS['accent'],
+        hover_color=COLORS['accent_hover']
+    )
+    ok_button.pack(pady=(0, 20))
+
+    # Esperar a que se cierre la ventana
+    window.wait_window()
+
+# =============================================================================
 # FUNCIONES DE ACTUALIZACIÓN DE BASE DE DATOS
 # =============================================================================
 def refresh_excel_formulas(file_path):
@@ -1239,14 +1430,12 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
         archivo_base (str): Ruta del archivo de base de datos local
         archivo_fuente (str): Ruta del archivo fuente descargado de Box
     """
-    global database_updated  # Declarar global al inicio de la función
-
-    # Verificar si ya se actualizó la base de datos en esta sesión
-    if database_updated:
-        print("Database already updated in this session. Skipping update.")
-        return
-
-    print("Updating database for the first time in this session...")
+    # ============================================================================
+    # PASO 1: UPDATE PROJECTS
+    # ============================================================================
+    print("=" * 70)
+    print("UPDATING DATABASE FOR THE FIRST TIME IN THIS SESSION")
+    print("=" * 70)
 
     # Leer los archivos
     df_base = pd.read_excel(archivo_base, sheet_name='N4W-Projects')
@@ -1254,6 +1443,7 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
 
     print(f"Rows in base: {len(df_base)}")
     print(f"Rows in source: {len(df_fuente)}")
+    print(f"Columns in df_base: {df_base.columns.tolist()}")
 
     # Función para verificar si un valor está "vacío"
     def esta_vacio(valor):
@@ -1348,11 +1538,161 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
         # Escribir los datos actualizados
         for idx, row in df_base.iterrows():
             fila_excel = idx + 2  # +2 porque índice empieza en 0 y hay encabezado
-            ws.Cells(fila_excel, 2).Value = row['Description']        # Columna B
-            ws.Cells(fila_excel, 3).Value = row['Project ID']         # Columna C
-            ws.Cells(fila_excel, 4).Value = row['Activity ID']        # Columna D
-            ws.Cells(fila_excel, 5).Value = row['Award ID']           # Columna E
-            ws.Cells(fila_excel, 6).Value = row['Category']           # Columna F
+            ws.Cells(fila_excel, 2).Value = row['Description']  # Columna B
+            ws.Cells(fila_excel, 3).Value = row['Project ID']  # Columna C
+            ws.Cells(fila_excel, 4).Value = row['Activity ID']  # Columna D
+            ws.Cells(fila_excel, 5).Value = row['Award ID']  # Columna E
+            ws.Cells(fila_excel, 6).Value = row['Category']  # Columna F
+
+        # Volver a proteger la hoja si estaba protegida
+        if sheet_was_protected:
+            ws.Protect(password)
+            print("Sheet protected again successfully")
+
+        # Guardar y cerrar
+        wb.Save()
+        wb.Close()
+
+        print("Database updated successfully using Excel COM")
+
+    except Exception as e:
+        print(f"Error during Excel COM operation: {e}")
+        try:
+            if 'wb' in locals():
+                wb.Close(SaveChanges=False)
+        except:
+            pass
+        raise
+
+    # ============================================================================
+    # PASO 2: IDENTIFICAR Y ELIMINAR PROYECTOS CERRADOS (LÓGICA NUEVA)
+    # ============================================================================
+    proyectos_a_eliminar = []
+
+    # Leer los archivos nuevamente (ya fueron actualizados en el PASO 1)
+    df_base = pd.read_excel(archivo_base, sheet_name='N4W-Projects')
+    df_fuente = pd.read_excel(archivo_fuente)
+
+    print(f"\nDEBUG PASO 2 - ELIMINACIÓN DE PROYECTOS:")
+    print(f"  Columnas en df_fuente: {df_fuente.columns.tolist()}")
+
+    # Crear índice de df_fuente para búsqueda rápida
+    df_fuente_indexed = df_fuente.set_index('Task_Name')
+
+    indices_a_eliminar = []
+
+    # Iterar sobre la BASE DE DATOS (no sobre df_fuente)
+    for idx in df_base.index:
+        code_actual = df_base.loc[idx, 'Code']
+
+        # Solo procesar códigos que NO estén vacíos
+        if not esta_vacio(code_actual):
+            # Verificar si este código existe en df_fuente
+            if code_actual in df_fuente_indexed.index:
+                # Obtener las fechas de este proyecto en df_fuente
+                date_opening = df_fuente_indexed.loc[
+                    code_actual, 'Date_Opened'] if 'Date_Opened' in df_fuente_indexed.columns else None
+                date_closing = df_fuente_indexed.loc[
+                    code_actual, 'Date_Closed'] if 'Date_Closed' in df_fuente_indexed.columns else None
+
+                # Condición 1: Date_Opened vacío
+                sin_apertura = esta_vacio(date_opening)
+
+                # Condición 2: Date_Closed con valor
+                con_cierre = not esta_vacio(date_closing)
+
+                # Si cumple alguna de las dos condiciones, marcar para eliminar
+                if sin_apertura or con_cierre:
+                    razon = []
+                    if sin_apertura:
+                        razon.append("No Date_Opened")
+                    if con_cierre:
+                        razon.append("Has Date_Closed")
+
+                    # Obtener descripción del proyecto
+                    descripcion = df_base.loc[idx, 'Description']
+
+                    proyectos_a_eliminar.append({
+                        'code': code_actual,
+                        'description': descripcion,
+                        'reason': ' | '.join(razon)
+                    })
+
+                    # Marcar índice para eliminar
+                    indices_a_eliminar.append(idx)
+
+                    print(f"  → Marcado para eliminar: {code_actual} - {descripcion} ({' | '.join(razon)})")
+
+    print(f"\nDEBUG: Total projects to remove from database: {len(proyectos_a_eliminar)}")
+    print(f"DEBUG: df_base rows before deletion: {len(df_base)}")
+
+    # Eliminar las filas del DataFrame
+    if indices_a_eliminar:
+        df_base = df_base.drop(indices_a_eliminar)
+        df_base = df_base.reset_index(drop=True)
+
+        print(f"DEBUG: df_base rows after deletion: {len(df_base)}")
+        print(f"Removed {len(indices_a_eliminar)} projects from database")
+
+        # Mostrar ventana personalizada con scroll para los proyectos eliminados
+        show_removed_projects_window(proyectos_a_eliminar)
+    else:
+        print("DEBUG: No projects to remove")
+
+    # Usar win32com.client para manejar protección completa del workbook y hojas
+    password = "TimeSheet_N4W"
+
+    # Convertir a ruta absoluta
+    archivo_base = os.path.abspath(archivo_base)
+
+    # Usar Excel COM para manejar protección
+    xl = win32com.client.Dispatch("Excel.Application")
+    xl.Visible = False
+    xl.DisplayAlerts = False
+
+    try:
+        # Abrir el workbook (si está protegido, Excel pedirá la contraseña automáticamente)
+        try:
+            wb = xl.Workbooks.Open(archivo_base, Password=password)
+        except:
+            # Si falla con contraseña, intentar sin ella
+            wb = xl.Workbooks.Open(archivo_base)
+
+        ws = wb.Worksheets('N4W-Projects')
+
+        # Verificar si la hoja está protegida y desprotegerla
+        sheet_was_protected = ws.ProtectContents
+        if sheet_was_protected:
+            ws.Unprotect(password)
+            print("Sheet unprotected successfully")
+
+        # Escribir los datos actualizados (incluyendo Code e Include para mantener sincronización después de eliminar filas)
+        for idx, row in df_base.iterrows():
+            fila_excel = idx + 2  # +2 porque índice empieza en 0 y hay encabezado
+            ws.Cells(fila_excel, 1).Value = row['Code']  # Columna A
+            ws.Cells(fila_excel, 2).Value = row['Description']  # Columna B
+            ws.Cells(fila_excel, 3).Value = row['Project ID']  # Columna C
+            ws.Cells(fila_excel, 4).Value = row['Activity ID']  # Columna D
+            ws.Cells(fila_excel, 5).Value = row['Award ID']  # Columna E
+            ws.Cells(fila_excel, 6).Value = row['Category']  # Columna F
+
+            # Escribir Include si existe en el DataFrame
+            if 'Include' in df_base.columns:
+                ws.Cells(fila_excel, 7).Value = row['Include']  # Columna G
+
+        # Si se eliminaron filas del DataFrame, borrar las filas sobrantes del Excel
+        ultima_fila_excel = ws.UsedRange.Rows.Count
+        filas_en_dataframe = len(df_base) + 1  # +1 por el encabezado
+
+        if ultima_fila_excel > filas_en_dataframe:
+            # Hay filas extras en el Excel que necesitan eliminarse
+            print(f"Deleting {ultima_fila_excel - filas_en_dataframe} extra rows from Excel")
+
+            # Eliminar las filas sobrantes (de abajo hacia arriba para evitar problemas de índice)
+            for fila in range(ultima_fila_excel, filas_en_dataframe, -1):
+                ws.Rows(fila).Delete()
+
+            print(f"Successfully deleted extra rows from Excel")
 
         # Volver a proteger la hoja si estaba protegida
         if sheet_was_protected:
@@ -1381,18 +1721,10 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
     refresh_excel_formulas(archivo_base)
     print("Database updated successfully")
 
-    # Marcar que la base de datos ya fue actualizada en esta sesión
-    database_updated = True
+    # Mostrar messagebox de actualización exitosa
+    messagebox.showinfo("Database Updated",
+                        "Database updated successfully!\n\nAll project information has been synchronized.")
 
-
-def reset_database_update_flag():
-    """
-    Resetea la bandera de actualización de base de datos.
-    Útil para forzar una nueva actualización si es necesario.
-    """
-    global database_updated
-    database_updated = False
-    print("Database update flag has been reset. Next update will proceed.")
 
 
 def Download_DataBase_N4W_Box(url_box, salida):
@@ -2198,9 +2530,17 @@ def update_categories(filepath, url_box="https://tnc.box.com/s/6y6iswltvf26pxrk3
         hide_progress_window()
         messagebox.showinfo("Completed", "Category update completed.")
 
+        # Habilitar botones al completar exitosamente
+        if app_instance:
+            app_instance.enable_all_action_buttons()
+
     except Exception as e:
         hide_progress_window()
         messagebox.showerror("Error", f"Error updating categories: {e}")
+
+        # Habilitar botones incluso si hay error
+        if app_instance:
+            app_instance.enable_all_action_buttons()
 
 
 def run_update_categories(filepath):
@@ -2314,7 +2654,7 @@ def process_category(category):
 # GENERACIÓN DE REPORTES
 # =============================================================================
 
-def generate_report(start_date, end_date, database_name):
+def generate_report(start_date, end_date, database_name, url_box="https://tnc.box.com/s/6y6iswltvf26pxrk3rt1e5s2i7xfo7k4"):
     """
     Genera reporte principal combinando datos de calendario y base de datos.
 
@@ -2324,6 +2664,19 @@ def generate_report(start_date, end_date, database_name):
         database_name (str): Ruta a la base de datos
     """
     try:
+
+        # Ruta del proyecto
+        ProjectPath = os.path.dirname(database_name)
+
+        # Ruta de salida de archivo de códigos del N4W
+        PathDB_N4W_Box = os.path.join(ProjectPath, "N4W_Task_Details.xlsx")
+
+        # Descarga archivo de códigos del N4W
+        Download_DataBase_N4W_Box(url_box, PathDB_N4W_Box)
+
+        # Actualizar base de datos
+        Update_DataBase_With_BoxFile(database_name, PathDB_N4W_Box)
+
         local_tz = get_localzone()
 
         # Validar fechas
@@ -2414,9 +2767,17 @@ def generate_report(start_date, end_date, database_name):
 
         messagebox.showinfo("Completed", "Process successfully completed.")
 
+        # Habilitar botones al completar exitosamente
+        if app_instance:
+            app_instance.enable_all_action_buttons()
+
     except Exception as e:
         messagebox.showerror("General Error", f"Unexpected error: {e}")
         traceback.print_exc()
+
+        # Habilitar botones incluso si hay error
+        if app_instance:
+            app_instance.enable_all_action_buttons()
 
 
 # =============================================================================
@@ -2436,17 +2797,17 @@ def fill_deltek(position, login_id, password, database_name, prorate=False,
         url_box (str): URL del archivo de códigos N4W en Box
     """
     try:
-        # Ruta del proyecto
+        # # Ruta del proyecto
         ProjectPath = os.path.dirname(database_name)
-
-        # Ruta de salida de archivo de códigos del N4W
+        #
+        # # Ruta de salida de archivo de códigos del N4W
         PathDB_N4W_Box = os.path.join(ProjectPath, "N4W_Task_Details.xlsx")
-
-        # Descarga archivo de códigos del N4W
-        Download_DataBase_N4W_Box(url_box, PathDB_N4W_Box)
-
-        # Actualizar base de datos
-        Update_DataBase_With_BoxFile(database_name, PathDB_N4W_Box)
+        #
+        # # Descarga archivo de códigos del N4W
+        # Download_DataBase_N4W_Box(url_box, PathDB_N4W_Box)
+        #
+        # # Actualizar base de datos
+        # Update_DataBase_With_BoxFile(database_name, PathDB_N4W_Box)
 
         FileTimeDeltek = os.path.join(ProjectPath, '02-Deltek.csv')
         if prorate:
@@ -2758,9 +3119,17 @@ def fill_deltek(position, login_id, password, database_name, prorate=False,
         print("Deltek process completed")
         messagebox.showinfo("Completed", "Deltek process successfully completed.")
 
+        # Habilitar botones al completar exitosamente
+        if app_instance:
+            app_instance.enable_all_action_buttons()
+
     except Exception as e:
         messagebox.showerror("Error General", f"Error inesperado: {e}")
         traceback.print_exc()
+
+        # Habilitar botones incluso si hay error
+        if app_instance:
+            app_instance.enable_all_action_buttons()
 
 
 # =============================================================================
@@ -3101,26 +3470,29 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
     """
     try:
         ProjectPath = os.path.dirname(NameDataBase)
-
-        # Ruta de salida de archivo de códigos del N4W
+        #
+        # # Ruta de salida de archivo de códigos del N4W
         PathDB_N4W_Box = os.path.join(ProjectPath, "N4W_Task_Details.xlsx")
-
-        # Descarga archivo de códigos del N4W
-        Download_DataBase_N4W_Box(url_box, PathDB_N4W_Box)
-
-        # Actualizar base de datos
-        Update_DataBase_With_BoxFile(NameDataBase, PathDB_N4W_Box)
+        #
+        # # Descarga archivo de códigos del N4W
+        # Download_DataBase_N4W_Box(url_box, PathDB_N4W_Box)
+        #
+        # # Actualizar base de datos
+        # Update_DataBase_With_BoxFile(NameDataBase, PathDB_N4W_Box)
 
         # Validar que el archivo 02-Deltek.csv tenga semanas completas
         deltek_csv_path = os.path.join(ProjectPath, "02-Deltek.csv")
         file_valid, file_error, file_start, file_end = validate_deltek_file_weeks(deltek_csv_path)
-        
+
         if not file_valid:
             messagebox.showerror(
-                "Invalid 02-Deltek.csv File", 
+                "Invalid 02-Deltek.csv File",
                 f"The 02-Deltek.csv file does not contain complete weeks.\n\n{file_error}\n\n"
                 f"Please regenerate the Deltek report with complete weeks (Monday to Sunday)."
             )
+            # Habilitar botones antes de salir
+            if app_instance:
+                app_instance.enable_all_action_buttons()
             return
         
         # Verificar que las fechas seleccionadas coincidan con las del archivo
@@ -3136,17 +3508,23 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
                 f"File contains: {file_start_date.strftime('%Y-%m-%d')} to {file_end_date.strftime('%Y-%m-%d')}\n\n"
                 f"Please select the same date range as in the Deltek file."
             )
+            # Habilitar botones antes de salir
+            if app_instance:
+                app_instance.enable_all_action_buttons()
             return
 
         # Validar que el correo ingresado coincida con el correo activo en Outlook
         email_valid, email_error, outlook_email = validate_outlook_email_match(LoginID)
-        
+
         if not email_valid:
             messagebox.showerror(
                 "Email Mismatch",
                 f"The email entered does not match the active Outlook account.\n\n{email_error}\n\n"
                 f"Please use the correct email address or switch to the appropriate Outlook account."
             )
+            # Habilitar botones antes de salir
+            if app_instance:
+                app_instance.enable_all_action_buttons()
             return
 
         # Verificar correo y obtiene el nombre del usuario
@@ -3154,13 +3532,16 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
 
         # Validar que no existan semanas duplicadas en OneDrive
         valid_weeks, duplicate_error, conflicts = validate_no_duplicate_weeks(info["email"], start_date, end_date)
-        
+
         if not valid_weeks:
             messagebox.showerror(
                 "Duplicate Weeks Detected",
                 f"Cannot submit timesheet due to duplicate weeks.\n\n{duplicate_error}\n\n"
                 f"Please check your OneDrive folder and remove conflicting files, or select different weeks."
             )
+            # Habilitar botones antes de salir
+            if app_instance:
+                app_instance.enable_all_action_buttons()
             return
 
         # Construir nombre de archivo con rango de fechas
@@ -3182,9 +3563,17 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
 
         messagebox.showinfo("Completed", "N4W Facility process successfully completed.")
 
+        # Habilitar botones al completar exitosamente
+        if app_instance:
+            app_instance.enable_all_action_buttons()
+
     except Exception as e:
         messagebox.showerror("Error General", f"Error inesperado: {e}")
         traceback.print_exc()
+
+        # Habilitar botones incluso si hay error
+        if app_instance:
+            app_instance.enable_all_action_buttons()
 
 
 # =============================================================================
@@ -3435,7 +3824,9 @@ class TimesheetApp:
         deltek_frame.grid_columnconfigure(0, weight=2)
         deltek_frame.grid_columnconfigure(1, weight=2)
         deltek_frame.grid_columnconfigure(2, weight=1)
-        deltek_frame.grid_columnconfigure(3, weight=1)
+        deltek_frame.grid_columnconfigure(3, weight=0)  # Para el ícono info
+        deltek_frame.grid_columnconfigure(4, weight=0)  # Para Prorate checkbox
+        deltek_frame.grid_columnconfigure(5, weight=0)  # Para botón Fill Deltek
 
         # ID Usuario
         self.email_entry_deltek = ctk.CTkEntry(
@@ -3474,8 +3865,31 @@ class TimesheetApp:
             text_color=COLORS['text_primary'],
             placeholder_text="Position"
         )
-        self.posi_entry_deltek.grid(row=0, column=2, sticky="ew", padx=(6, 6))
+        self.posi_entry_deltek.grid(row=0, column=2, sticky="ew", padx=(6, 2))
         self.posi_entry_deltek.insert(0, "0")
+
+        # Info icon para Position con tooltip
+        info_icon = ctk.CTkLabel(
+            deltek_frame,
+            text="ℹ️",
+            font=ctk.CTkFont(size=16),
+            text_color=COLORS['accent'],
+            cursor="hand2",
+            width=3
+        )
+        info_icon.grid(row=0, column=3, sticky="w", padx=(1, 0))
+
+        # Crear tooltip para el ícono de información
+        tooltip_text = (
+            "Pre-existing Row Position\n\n"
+            "This number indicates how many rows are already\n"
+            "occupied by projects in your Deltek timesheet\n"
+            "that cannot be deleted.\n\n"
+            "• Use 0 when the timesheet is completely empty\n"
+            "• Use 1 if there is one existing project\n"
+            "• Use 2 if there are two existing projects, etc.\n\n"
+        )
+        ToolTip(info_icon, tooltip_text)
 
         # Prorate checkbox
         self.prorate_checkbox = ctk.CTkCheckBox(
@@ -3485,7 +3899,7 @@ class TimesheetApp:
             font=ctk.CTkFont(size=13),
             text_color=COLORS['text_primary']
         )
-        self.prorate_checkbox.grid(row=0, column=4, padx=(6, 6))
+        self.prorate_checkbox.grid(row=0, column=4, padx=(0, 0))
         self.prorate_checkbox.select()  # Set checked by default
 
         # Botón llenar Deltek
@@ -3493,13 +3907,13 @@ class TimesheetApp:
             deltek_frame,
             text="Fill Deltek",
             command=lambda: self.fill_deltek(),
-            width=100,
+            width=90,
             height=36,
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color=COLORS['success'],
             hover_color='#0D6A0D'
         )
-        self.fill_deltek_button.grid(row=0, column=3, padx=(6, 0))
+        self.fill_deltek_button.grid(row=0, column=5, padx=(6, 0))
 
     def _create_module4_CodeN4W(self, parent):
         """Crea el módulo 4: Llenar N4W Facility."""
@@ -3670,81 +4084,138 @@ class TimesheetApp:
 
     def run_update_categories(self, database_path=None):
         """Ejecuta actualización de categorías."""
-        if database_path is None:
-            database_path = self.projects_database.get()
+        # Deshabilitar botones al inicio
+        self.disable_all_action_buttons()
 
-        if not database_path:
-            messagebox.showerror("Error", "Please select a database.")
-            return
+        try:
+            if database_path is None:
+                database_path = self.projects_database.get()
 
-        run_update_categories(database_path)
+            if not database_path:
+                messagebox.showerror("Error", "Please select a database.")
+                self.enable_all_action_buttons()
+                return
+
+            run_update_categories(database_path)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Unexpected error: {e}")
+            self.enable_all_action_buttons()
 
     def generate_report(self):
         """Genera reporte de reuniones."""
-        start_date = datetime.strptime(self.start_date_entry.get(), '%Y-%m-%d')
-        end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
-        database_path = self.projects_database.get()
+        # Deshabilitar botones al inicio
+        self.disable_all_action_buttons()
 
-        if not database_path:
-            messagebox.showerror("Error", "Please select a database.")
-            return
+        try:
+            start_date = datetime.strptime(self.start_date_entry.get(), '%Y-%m-%d')
+            end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
+            database_path = self.projects_database.get()
 
-        generate_report(start_date, end_date, database_path)
+            if not database_path:
+                messagebox.showerror("Error", "Please select a database.")
+                self.enable_all_action_buttons()
+                return
+
+            generate_report(start_date, end_date, database_path)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Unexpected error: {e}")
+            self.enable_all_action_buttons()
 
     def fill_deltek(self):
         """Llena formularios Deltek."""
-        user_id = self.email_entry_deltek.get()
-        password = self.password_entry_deltek.get()
-        position = self.posi_entry_deltek.get()
-        database_path = self.projects_database.get()
-        prorate = self.prorate_checkbox.get()
-
-        if not all([user_id, password, position, database_path]):
-            messagebox.showerror("Error", "Please complete all fields.")
-            return
+        # Deshabilitar botones al inicio
+        self.disable_all_action_buttons()
 
         try:
+            user_id = self.email_entry_deltek.get()
+            password = self.password_entry_deltek.get()
+            position = self.posi_entry_deltek.get()
+            database_path = self.projects_database.get()
+            prorate = self.prorate_checkbox.get()
+
+            if not all([user_id, password, position, database_path]):
+                messagebox.showerror("Error", "Please complete all fields.")
+                self.enable_all_action_buttons()
+                return
+
             fill_deltek(int(position), user_id, password, database_path, prorate)
+
         except ValueError:
             messagebox.showerror("Error", "Position must be a number.")
+            self.enable_all_action_buttons()
+        except Exception as e:
+            messagebox.showerror("Error", f"Unexpected error: {e}")
+            self.enable_all_action_buttons()
 
     def Fill_N4W_App(self):
         """Llena formularios N4W Facility."""
-        email = self.email_entry_CodeN4W.get()
-        database_path = self.projects_database.get()
+        # Deshabilitar botones al inicio
+        self.disable_all_action_buttons()
 
-        if not all([email, database_path]):
-            messagebox.showerror("Error", "Please complete all fields.")
-            return
+        try:
+            email = self.email_entry_CodeN4W.get()
+            database_path = self.projects_database.get()
 
-        # Obtener fechas de los widgets
-        start_date = self.start_date_entry.get_date()
-        end_date = self.end_date_entry.get_date()
+            if not all([email, database_path]):
+                messagebox.showerror("Error", "Please complete all fields.")
+                self.enable_all_action_buttons()
+                return
 
-        # Convertir a datetime si son objetos date
-        if hasattr(start_date, 'date'):
-            start_date = datetime.combine(start_date, datetime.min.time())
-        if hasattr(end_date, 'date'):
-            end_date = datetime.combine(end_date, datetime.min.time())
-        elif isinstance(start_date, str):
-            start_date = datetime.strptime(start_date, '%Y-%m-%d')
-            end_date = datetime.strptime(end_date, '%Y-%m-%d')
+            # Obtener fechas de los widgets
+            start_date = self.start_date_entry.get_date()
+            end_date = self.end_date_entry.get_date()
 
-        # Validar semanas completas
-        is_valid, error_message = validate_complete_weeks(start_date, end_date)
+            # Convertir a datetime si son objetos date
+            if hasattr(start_date, 'date'):
+                start_date = datetime.combine(start_date, datetime.min.time())
+            if hasattr(end_date, 'date'):
+                end_date = datetime.combine(end_date, datetime.min.time())
+            elif isinstance(start_date, str):
+                start_date = datetime.strptime(start_date, '%Y-%m-%d')
+                end_date = datetime.strptime(end_date, '%Y-%m-%d')
 
-        if not is_valid:
-            messagebox.showerror(
-                "Invalid Date Range",
-                f"Please select complete weeks (Monday to Sunday).\n\n{error_message}\n\n"
-                f"Tips:\n"
-                f"• Start date must be a Monday\n"
-                f"• End date must be a Sunday\n"
-                f"• You can select multiple consecutive weeks"
-            )
-            return
+            # Validar semanas completas
+            is_valid, error_message = validate_complete_weeks(start_date, end_date)
 
-        Fill_N4W(email, database_path, start_date, end_date)
+            if not is_valid:
+                messagebox.showerror(
+                    "Invalid Date Range",
+                    f"Please select complete weeks (Monday to Sunday).\n\n{error_message}\n\n"
+                    f"Tips:\n"
+                    f"• Start date must be a Monday\n"
+                    f"• End date must be a Sunday\n"
+                    f"• You can select multiple consecutive weeks"
+                )
+                self.enable_all_action_buttons()
+                return
+
+            Fill_N4W(email, database_path, start_date, end_date)
+
+        except Exception as e:
+            # Capturar cualquier error inesperado y habilitar botones
+            messagebox.showerror("Error", f"Unexpected error: {e}")
+            self.enable_all_action_buttons()
+
+    # =========================================================================
+    # MÉTODOS DE CONTROL DE ESTADO DE BOTONES
+    # =========================================================================
+    def disable_all_action_buttons(self):
+        """Deshabilita todos los botones de acción para prevenir clics múltiples."""
+        self.button_load_database.configure(state="disabled")
+        self.button_update_categories.configure(state="disabled")
+        self.read_button.configure(state="disabled")
+        self.fill_deltek_button.configure(state="disabled")
+        self.Fill_N4W_App_button.configure(state="disabled")
+
+    def enable_all_action_buttons(self):
+        """Habilita todos los botones de acción después de completar un proceso."""
+        self.button_load_database.configure(state="normal")
+        self.button_update_categories.configure(state="normal")
+        self.read_button.configure(state="normal")
+        self.fill_deltek_button.configure(state="normal")
+        self.Fill_N4W_App_button.configure(state="normal")
 
     def run(self):
         """Inicia la aplicación."""
