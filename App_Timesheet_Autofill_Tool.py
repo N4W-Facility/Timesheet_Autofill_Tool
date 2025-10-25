@@ -1456,15 +1456,17 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
         return False
 
     # Obtener solo los Code que NO están vacíos
-    CodeN4W_ids_validos = set()
+    CodeN4W_ids_validos1 = set()
     for idx in df_base.index:
         CodeN4W_id = df_base.loc[idx, 'Code']
         if not esta_vacio(CodeN4W_id):
-            CodeN4W_ids_validos.add(CodeN4W_id)
+            CodeN4W_ids_validos1.add(CodeN4W_id)
 
     task_names = set(df_fuente['Task_Name'].dropna())
 
     # Verificar que todos los códigos válidos de la base existan en el fuente
+    CodeN4W_ids_validos = {x for x in CodeN4W_ids_validos1 if not (isinstance(x, (int, float)) and not isinstance(x, bool) and x == -1)}
+
     faltantes = CodeN4W_ids_validos - task_names
 
     if faltantes:
@@ -1584,6 +1586,10 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
     # Iterar sobre la BASE DE DATOS (no sobre df_fuente)
     for idx in df_base.index:
         code_actual = df_base.loc[idx, 'Code']
+
+        if code_actual == -1:
+            # Condición 3: Valor de -1 en Code
+            indices_a_eliminar.append(idx)
 
         # Solo procesar códigos que NO estén vacíos
         if not esta_vacio(code_actual):
