@@ -62,6 +62,7 @@ from selenium.common.exceptions import StaleElementReferenceException
 # Librerías de Windows
 import win32com.client
 from win32com.client import constants
+import pythoncom
 
 # Librerías de red
 import requests
@@ -1430,20 +1431,13 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
         archivo_base (str): Ruta del archivo de base de datos local
         archivo_fuente (str): Ruta del archivo fuente descargado de Box
     """
-    # ============================================================================
-    # PASO 1: UPDATE PROJECTS
-    # ============================================================================
     print("=" * 70)
     print("UPDATING DATABASE FOR THE FIRST TIME IN THIS SESSION")
     print("=" * 70)
 
-    # Leer los archivos
-    df_base = pd.read_excel(archivo_base, sheet_name='N4W-Projects')
-    df_fuente = pd.read_excel(archivo_fuente)
-
-    print(f"Rows in base: {len(df_base)}")
-    print(f"Rows in source: {len(df_fuente)}")
-    print(f"Columns in df_base: {df_base.columns.tolist()}")
+    # Convertir a ruta absoluta al inicio
+    archivo_base = os.path.abspath(archivo_base)
+    password = "TimeSheet_N4W"
 
     # Función para verificar si un valor está "vacío"
     def esta_vacio(valor):
@@ -1454,6 +1448,22 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
         if isinstance(valor, str) and len(valor.strip()) == 0:
             return True
         return False
+
+    # ============================================================================
+    # PASO 0: LEER TODOS LOS DATOS CON PANDAS (ANTES DE OPERACIONES COM)
+    # ============================================================================
+    print("\n[PASO 0] Reading data with pandas...")
+    df_base = pd.read_excel(archivo_base, sheet_name='N4W-Projects')
+    df_fuente = pd.read_excel(archivo_fuente)
+
+    print(f"Rows in base: {len(df_base)}")
+    print(f"Rows in source: {len(df_fuente)}")
+    print(f"Columns in df_base: {df_base.columns.tolist()}")
+
+    # ============================================================================
+    # PASO 1: PROCESAR ACTUALIZACIONES DE PROYECTOS (EN MEMORIA)
+    # ============================================================================
+    print("\n[PASO 1] Processing project updates...")
 
     # Obtener solo los Code que NO están vacíos
     CodeN4W_ids_validos1 = set()
@@ -1510,77 +1520,11 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
             df_base.loc[idx, 'Award ID'] = "0"
             df_base.loc[idx, 'Category'] = "0"
 
-    # Usar win32com.client para manejar protección completa del workbook y hojas
-    password = "TimeSheet_N4W"
-
-    # Convertir a ruta absoluta
-    archivo_base = os.path.abspath(archivo_base)
-
-    # Usar Excel COM para manejar protección
-    xl = win32com.client.Dispatch("Excel.Application")
-    xl.Visible = False
-    xl.DisplayAlerts = False
-
-    try:
-        # Abrir el workbook (si está protegido, Excel pedirá la contraseña automáticamente)
-        try:
-            wb = xl.Workbooks.Open(archivo_base, Password=password)
-        except:
-            # Si falla con contraseña, intentar sin ella
-            wb = xl.Workbooks.Open(archivo_base)
-
-        ws = wb.Worksheets('N4W-Projects')
-
-        # Verificar si la hoja está protegida y desprotegerla
-        sheet_was_protected = ws.ProtectContents
-        if sheet_was_protected:
-            ws.Unprotect(password)
-            print("Sheet unprotected successfully")
-
-        # Escribir los datos actualizados
-        for idx, row in df_base.iterrows():
-            fila_excel = idx + 2  # +2 porque índice empieza en 0 y hay encabezado
-            ws.Cells(fila_excel, 2).Value = row['Description']  # Columna B
-            ws.Cells(fila_excel, 3).Value = row['Project ID']  # Columna C
-            ws.Cells(fila_excel, 4).Value = row['Activity ID']  # Columna D
-            ws.Cells(fila_excel, 5).Value = row['Award ID']  # Columna E
-            ws.Cells(fila_excel, 6).Value = row['Category']  # Columna F
-
-        # Volver a proteger la hoja si estaba protegida
-        if sheet_was_protected:
-            ws.Protect(password)
-            print("Sheet protected again successfully")
-
-        # Guardar y cerrar
-        wb.Save()
-        wb.Close()
-
-        print("Database updated successfully using Excel COM")
-
-    except Exception as e:
-        print(f"Error during Excel COM operation: {e}")
-        try:
-            if 'wb' in locals():
-                wb.Close(SaveChanges=False)
-        except:
-            pass
-        raise
-
     # ============================================================================
-    # PASO 2: IDENTIFICAR Y ELIMINAR PROYECTOS CERRADOS (LÓGICA NUEVA)
+    # PASO 2: IDENTIFICAR Y ELIMINAR PROYECTOS CERRADOS (EN MEMORIA)
     # ============================================================================
+    print("\n[PASO 2] Identifying closed projects...")
     proyectos_a_eliminar = []
-
-    # Leer los archivos nuevamente (ya fueron actualizados en el PASO 1)
-    df_base = pd.read_excel(archivo_base, sheet_name='N4W-Projects')
-    df_fuente = pd.read_excel(archivo_fuente)
-
-    print(f"\nDEBUG PASO 2 - ELIMINACIÓN DE PROYECTOS:")
-    print(f"  Columnas en df_fuente: {df_fuente.columns.tolist()}")
-
-    # Crear índice de df_fuente para búsqueda rápida
-    df_fuente_indexed = df_fuente.set_index('Task_Name')
-
     indices_a_eliminar = []
 
     # Iterar sobre la BASE DE DATOS (no sobre df_fuente)
@@ -1627,41 +1571,41 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
                     # Marcar índice para eliminar
                     indices_a_eliminar.append(idx)
 
-                    print(f"  → Marcado para eliminar: {code_actual} - {descripcion} ({' | '.join(razon)})")
+                    print(f"  → Marked for deletion: {code_actual} - {descripcion} ({' | '.join(razon)})")
 
-    print(f"\nDEBUG: Total projects to remove from database: {len(proyectos_a_eliminar)}")
-    print(f"DEBUG: df_base rows before deletion: {len(df_base)}")
+    print(f"\nTotal projects to remove: {len(proyectos_a_eliminar)}")
+    print(f"Rows before deletion: {len(df_base)}")
 
     # Eliminar las filas del DataFrame
     if indices_a_eliminar:
         df_base = df_base.drop(indices_a_eliminar)
         df_base = df_base.reset_index(drop=True)
 
-        print(f"DEBUG: df_base rows after deletion: {len(df_base)}")
+        print(f"Rows after deletion: {len(df_base)}")
         print(f"Removed {len(indices_a_eliminar)} projects from database")
 
         # Mostrar ventana personalizada con scroll para los proyectos eliminados
         show_removed_projects_window(proyectos_a_eliminar)
     else:
-        print("DEBUG: No projects to remove")
+        print("No projects to remove")
 
-    # Usar win32com.client para manejar protección completa del workbook y hojas
-    password = "TimeSheet_N4W"
-
-    # Convertir a ruta absoluta
-    archivo_base = os.path.abspath(archivo_base)
-
-    # Usar Excel COM para manejar protección
-    xl = win32com.client.Dispatch("Excel.Application")
-    xl.Visible = False
-    xl.DisplayAlerts = False
+    # ============================================================================
+    # PASO 3: ESCRIBIR TODOS LOS CAMBIOS A EXCEL (UNA SOLA INSTANCIA COM)
+    # ============================================================================
+    print("\n[PASO 3] Writing changes to Excel with single COM instance...")
+    xl = None
+    wb = None
 
     try:
-        # Abrir el workbook (si está protegido, Excel pedirá la contraseña automáticamente)
+        # Crear UNA SOLA instancia Excel COM
+        xl = win32com.client.Dispatch("Excel.Application")
+        xl.Visible = False
+        xl.DisplayAlerts = False
+
+        # Abrir el workbook
         try:
             wb = xl.Workbooks.Open(archivo_base, Password=password)
         except:
-            # Si falla con contraseña, intentar sin ella
             wb = xl.Workbooks.Open(archivo_base)
 
         ws = wb.Worksheets('N4W-Projects')
@@ -1672,7 +1616,7 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
             ws.Unprotect(password)
             print("Sheet unprotected successfully")
 
-        # Escribir los datos actualizados (incluyendo Code e Include para mantener sincronización después de eliminar filas)
+        # Escribir los datos actualizados (todas las columnas para mantener sincronización)
         for idx, row in df_base.iterrows():
             fila_excel = idx + 2  # +2 porque índice empieza en 0 y hay encabezado
             ws.Cells(fila_excel, 1).Value = row['Code']  # Columna A
@@ -1691,13 +1635,9 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
         filas_en_dataframe = len(df_base) + 1  # +1 por el encabezado
 
         if ultima_fila_excel > filas_en_dataframe:
-            # Hay filas extras en el Excel que necesitan eliminarse
             print(f"Deleting {ultima_fila_excel - filas_en_dataframe} extra rows from Excel")
-
-            # Eliminar las filas sobrantes (de abajo hacia arriba para evitar problemas de índice)
             for fila in range(ultima_fila_excel, filas_en_dataframe, -1):
                 ws.Rows(fila).Delete()
-
             print(f"Successfully deleted extra rows from Excel")
 
         # Volver a proteger la hoja si estaba protegida
@@ -1705,27 +1645,44 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
             ws.Protect(password)
             print("Sheet protected again successfully")
 
-        # Guardar y cerrar
+        # Guardar cambios
         wb.Save()
+        print("Changes saved successfully")
+
+        # ========================================================================
+        # PASO 4: REFRESH FORMULAS (MISMA INSTANCIA COM)
+        # ========================================================================
+        print("\n[PASO 4] Refreshing Excel formulas...")
+        xl.CalculateUntilAsyncQueriesDone()
+        wb.Save()
+        print("Formulas refreshed successfully")
+
+        # Cerrar workbook
         wb.Close()
-        print("Database updated successfully using Excel COM")
+        wb = None
+        print("Workbook closed successfully")
 
     except Exception as e:
         print(f"Error during Excel COM operation: {e}")
         try:
-            if 'wb' in locals():
+            if wb is not None:
                 wb.Close(SaveChanges=False)
         except:
             pass
         raise
-    finally:
-        try:
-            xl.Quit()
-        except:
-            pass
 
-    refresh_excel_formulas(archivo_base)
-    print("Database updated successfully")
+    finally:
+        # GARANTIZAR liberación de Excel COM
+        try:
+            if xl is not None:
+                xl.Quit()
+                print("Excel COM instance released")
+        except Exception as e:
+            print(f"Warning: Error releasing Excel COM: {e}")
+
+    print("\n" + "=" * 70)
+    print("DATABASE UPDATE COMPLETED SUCCESSFULLY")
+    print("=" * 70)
 
     # Mostrar messagebox de actualización exitosa
     messagebox.showinfo("Database Updated",
@@ -1777,13 +1734,16 @@ def Lookup_UserName_Outlook(email: str) -> Optional[Dict[str, str]]:
     - Primero intenta el directorio (Global Address List) si hay cuenta Exchange/365.
     - Si no, busca en Contactos locales (Email1/Email2/Email3).
     - Devuelve dict con name, email y metadatos cuando Outlook los expone.
-    
+
     Args:
         email (str): Dirección de correo electrónico a buscar
-        
+
     Returns:
         Optional[Dict[str, str]]: Diccionario con información del usuario o None
     """
+    outlook = None
+    session = None
+
     # Resultado base
     result = {"email": email, "name": None}
 
@@ -1866,6 +1826,16 @@ def Lookup_UserName_Outlook(email: str) -> Optional[Dict[str, str]]:
     except Exception as e:
         # Algo muy raro (p.ej. Outlook no configurado)
         raise RuntimeError(f"Unable to access Outlook: {e}")
+
+    finally:
+        # Liberar objetos Outlook COM
+        try:
+            if session is not None:
+                session = None
+            if outlook is not None:
+                outlook = None
+        except Exception as e:
+            print(f"Warning: Error releasing Outlook COM: {e}")
 
 
 # =============================================================================
@@ -2035,7 +2005,8 @@ def resolve_onedrive_target(target_path_in_onedrive: str,
             enterprise = [a for a in accounts if " - " in (a["label"] or "")]
             chosen = enterprise[0] if enterprise else accounts[0]
 
-    chosen["root"] = chosen["root"].replace("OneDrive - ", "")
+    Tmp = os.path.split(chosen["root"]) #chosen["root"].replace("OneDrive - ", "")
+    chosen["root"] = os.path.join(Tmp[0],"The Nature Conservancy")
     root = Path(chosen["root"])
     return root.joinpath(*parts)
 
@@ -2079,6 +2050,7 @@ def put_file_in_onedrive(src_path: str,
     else:
         # Remplazar para que sea solo la ruta compartida por Sunil
         dst = str(dst).replace('OneDrive - ', '')
+        dst = dst.replace('OneDrive', '')
         shutil.copy2(str(src), str(dst))  # conserva metadata básica
 
     return dst
@@ -2319,100 +2291,6 @@ def CreateExcel_N4WFormat(archivo_csv, email_empleado, nombre_empleado, ruta_gua
 # =============================================================================
 # GESTIÓN DE BASE DE DATOS
 # =============================================================================
-def Lookup_UserName_Outlook(email: str) -> Optional[Dict[str, str]]:
-    """
-    lookup_outlook_name(email): Busca el nombre de la persona asociada a un correo en Outlook.
-    - Primero intenta el directorio (Global Address List) si hay cuenta Exchange/365.
-    - Si no, busca en Contactos locales (Email1/Email2/Email3).
-    - Devuelve dict con name, email y metadatos cuando Outlook los expone.
-    """
-
-    # Resultado base
-    result = {"email": email, "name": None}
-
-    try:
-        # Inicia Outlook (o se conecta a una instancia existente)
-        outlook = win32com.client.gencache.EnsureDispatch("Outlook.Application")
-        session = outlook.Session  # MAPI Namespace
-
-        # --- 1) Resolver en directorio (Exchange/365) ---
-        # CreateRecipient intenta resolver en GAL/Directorio si existe
-        recipient = session.CreateRecipient(email)
-        recipient.Resolve()
-        if recipient.Resolved:
-            ae = recipient.AddressEntry
-            # Nombre “display” genérico
-            result["name"] = ae.Name
-
-            # Si es usuario Exchange, podemos sacar datos más ricos
-            try:
-                ex_user = ae.GetExchangeUser()
-            except Exception:
-                ex_user = None
-
-            if ex_user:
-                # ex_user.PrimarySmtpAddress suele ser el correo “real”
-                result.update({
-                    "email": ex_user.PrimarySmtpAddress or email,
-                    "name": ex_user.Name or ae.Name or None,
-                })
-                # Extra opcional si está disponible
-                try:
-                    if ex_user.JobTitle:
-                        result["job_title"] = ex_user.JobTitle
-                except Exception:
-                    pass
-                try:
-                    if ex_user.CompanyName:
-                        result["company"] = ex_user.CompanyName
-                except Exception:
-                    pass
-                return result
-
-            # Si no es ExchangeUser (p.ej. contacto de Internet), vale el display name
-            if result["name"]:
-                return result
-
-        # --- 2) Buscar en Contactos locales ---
-        try:
-            contacts = session.GetDefaultFolder(constants.olFolderContacts)  # 10
-            items = contacts.Items
-            # Revisamos hasta 3 campos de email que Outlook maneja en Contactos
-            for field in ("Email1Address", "Email2Address", "Email3Address"):
-                # Items.Find usa la sintaxis de restricción de Outlook
-                found = items.Find(f"[{field}] = '{email}'")
-                if found:
-                    result["name"] = getattr(found, "FullName", None) or getattr(found, "CompanyName", None)
-                    # Si Outlook almacenó el email con normalización distinta, respétalo
-                    try:
-                        normalized = getattr(found, field, None)
-                        if normalized:
-                            result["email"] = normalized
-                    except Exception:
-                        pass
-                    return result
-        except Exception:
-            # Si no hay carpeta de contactos o no se puede acceder, continuamos
-            pass
-
-        # --- 3) Último intento: “resolver” sólo para obtener display name genérico ---
-        if not recipient.Resolved:
-            # A veces Resolve falla con el correo; probamos con Recipient de nuevo
-            recipient = session.CreateRecipient(email)
-            recipient.Resolve()
-        if recipient and recipient.Resolved:
-            result["name"] = recipient.Name or result["name"]
-
-        # Si llegamos aquí, devolvemos lo que tengamos (quizá sólo el email)
-        return result if (result.get("name") or result.get("email")) else None
-
-    except Exception as e:
-        # Algo muy raro (p.ej. Outlook no configurado)
-        raise RuntimeError(
-            f"Unable to access Outlook: {e}"
-        )
-
-
 # =============================================================================
 # DESCARGA DE BASE DE DATOS DEL N4W - BOX
 # =============================================================================
@@ -2479,7 +2357,15 @@ def update_categories(filepath, url_box="https://tnc.box.com/s/6y6iswltvf26pxrk3
     Args:
         filepath (str): Ruta al archivo Excel con las categorías
     """
+    outlook = None
+    com_initialized = False
+
     try:
+        # Inicializar COM para este thread
+        pythoncom.CoInitialize()
+        com_initialized = True
+        print("COM initialized for thread")
+
         ProjectPath = os.path.dirname(filepath)
 
         # Ruta de salida de archivo de códigos del N4W
@@ -2528,6 +2414,10 @@ def update_categories(filepath, url_box="https://tnc.box.com/s/6y6iswltvf26pxrk3
 
             time.sleep(0.25)
 
+            # Pump COM messages cada 10 iteraciones para evitar desconexiones
+            if i % 10 == 0:
+                pythoncom.PumpWaitingMessages()
+
             # Actualizar progreso
             if progress_bar:
                 progress_bar['value'] = i + 1
@@ -2547,6 +2437,23 @@ def update_categories(filepath, url_box="https://tnc.box.com/s/6y6iswltvf26pxrk3
         # Habilitar botones incluso si hay error
         if app_instance:
             app_instance.enable_all_action_buttons()
+
+    finally:
+        # Liberar objeto Outlook COM
+        try:
+            if outlook is not None:
+                outlook = None
+                print("Outlook COM instance released")
+        except Exception as e:
+            print(f"Warning: Error releasing Outlook COM: {e}")
+
+        # Liberar COM del thread
+        if com_initialized:
+            try:
+                pythoncom.CoUninitialize()
+                print("COM uninitialized for thread")
+            except Exception as e:
+                print(f"Warning: Error uninitializing COM: {e}")
 
 
 def run_update_categories(filepath):
@@ -2571,50 +2478,66 @@ def get_calendar(start_date, end_date, buffer_start=25, buffer_end=25):
     Returns:
         pd.DataFrame: DataFrame con reuniones extraídas
     """
-    # Conectar con Outlook
-    outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-    calendar = outlook.GetDefaultFolder(9)
+    outlook = None
+    namespace = None
 
-    # Configurar zona horaria
-    local_tz = get_localzone()
-    start_date = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=local_tz)
-    end_date = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=local_tz)
+    try:
+        # Conectar con Outlook
+        outlook_app = win32com.client.Dispatch("Outlook.Application")
+        namespace = outlook_app.GetNamespace("MAPI")
+        calendar = namespace.GetDefaultFolder(9)
 
-    # Obtener elementos con buffer
-    items = calendar.Items
-    items.IncludeRecurrences = True
-    items.Sort("[Start]")
+        # Configurar zona horaria
+        local_tz = get_localzone()
+        start_date = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=local_tz)
+        end_date = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=local_tz)
 
-    start_buffer = start_date - timedelta(days=buffer_start)
-    end_buffer = end_date + timedelta(days=buffer_end)
+        # Obtener elementos con buffer
+        items = calendar.Items
+        items.IncludeRecurrences = True
+        items.Sort("[Start]")
 
-    # Filtrar por fechas
-    start_str = start_buffer.strftime('%m/%d/%Y %H:%M')
-    end_str = end_buffer.strftime('%m/%d/%Y %H:%M')
-    restriction = f"[Start] >= '{start_str}' AND [End] <= '{end_str}'"
-    restricted_items = items.Restrict(restriction)
+        start_buffer = start_date - timedelta(days=buffer_start)
+        end_buffer = end_date + timedelta(days=buffer_end)
 
-    # Extraer reuniones
-    meetings = []
-    for item in restricted_items:
+        # Filtrar por fechas
+        start_str = start_buffer.strftime('%m/%d/%Y %H:%M')
+        end_str = end_buffer.strftime('%m/%d/%Y %H:%M')
+        restriction = f"[Start] >= '{start_str}' AND [End] <= '{end_str}'"
+        restricted_items = items.Restrict(restriction)
+
+        # Extraer reuniones
+        meetings = []
+        for item in restricted_items:
+            try:
+                meeting_start = item.Start
+                meeting_end = item.End
+
+                if remove_timezone(start_date) <= remove_timezone(meeting_start) <= remove_timezone(end_date):
+                    category = item.Categories if item.Categories else "Sin Category"
+                    meeting_date = meeting_start.date()
+                    duration = (meeting_end - meeting_start).total_seconds() / 3600
+
+                    meetings.append({
+                        'Date': meeting_date,
+                        'Category': category,
+                        'Hours': duration
+                    })
+            except AttributeError:
+                continue
+
+        return pd.DataFrame(meetings)
+
+    finally:
+        # Liberar objetos Outlook COM
         try:
-            meeting_start = item.Start
-            meeting_end = item.End
-
-            if remove_timezone(start_date) <= remove_timezone(meeting_start) <= remove_timezone(end_date):
-                category = item.Categories if item.Categories else "Sin Category"
-                meeting_date = meeting_start.date()
-                duration = (meeting_end - meeting_start).total_seconds() / 3600
-
-                meetings.append({
-                    'Date': meeting_date,
-                    'Category': category,
-                    'Hours': duration
-                })
-        except AttributeError:
-            continue
-
-    return pd.DataFrame(meetings)
+            if namespace is not None:
+                namespace = None
+            if outlook_app is not None:
+                outlook_app = None
+            print("Outlook COM instances released")
+        except Exception as e:
+            print(f"Warning: Error releasing Outlook COM: {e}")
 
 
 def calculate_workdays(year, month):
@@ -2688,6 +2611,10 @@ def generate_report(start_date, end_date, database_name, url_box="https://tnc.bo
         # Validar fechas
         if start_date > end_date:
             messagebox.showerror("Error", "The start date cannot be later than the end date.")
+
+            # Habilitar botones cuando hay error de validación
+            if app_instance:
+                app_instance.enable_all_action_buttons()
             return
 
         end_date = end_date + timedelta(days=1)
@@ -2833,6 +2760,10 @@ def fill_deltek(position, login_id, password, database_name, prorate=False,
             if not user_approved:
                 print("Process cancelled by user after prorate comparison.")
                 messagebox.showinfo("Cancelled", "Deltek process cancelled by user.")
+
+                # Habilitar botones cuando el usuario cancela
+                if app_instance:
+                    app_instance.enable_all_action_buttons()
                 return
 
             FileTimeDeltek = output_file
@@ -3402,29 +3333,42 @@ def validate_no_duplicate_weeks(email, new_start_date, new_end_date):
 def get_outlook_active_email():
     """
     Detecta el correo electrónico de la cuenta activa en Outlook.
-    
+
     Returns:
         str: Dirección de correo de la cuenta activa, o None si no se puede detectar
     """
+    outlook = None
+    namespace = None
+
     try:
         import win32com.client
-        
+
         # Conectar a Outlook
         outlook = win32com.client.Dispatch("Outlook.Application")
         namespace = outlook.GetNamespace("MAPI")
-        
+
         # Obtener la cuenta por defecto (primera cuenta configurada)
         # Esto funciona para la mayoría de casos donde hay una cuenta principal
         accounts = namespace.Accounts
         if accounts.Count > 0:
             default_account = accounts.Item(1)  # Primera cuenta (índice 1 en COM)
             return default_account.SmtpAddress
-        
+
         return None
-        
+
     except Exception as e:
         print(f"Error detecting Outlook email: {e}")
         return None
+
+    finally:
+        # Liberar objetos Outlook COM
+        try:
+            if namespace is not None:
+                namespace = None
+            if outlook is not None:
+                outlook = None
+        except Exception as e:
+            print(f"Warning: Error releasing Outlook COM: {e}")
 
 
 def validate_outlook_email_match(user_email):
@@ -3560,12 +3504,12 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
                               archivo_base_datos=PathDB_N4W_Box)
 
         # Enviar archivo a OneDrive
-        put_file_in_onedrive(
-            os.path.join(ProjectPath, NameFile),
-            fr"N4WTimeTracking - Science Timesheets\{NameFile}",
-            account_hint="The Nature Conservancy",  # o parte del nombre de la empresa
-            overwrite=True
-        )
+        # put_file_in_onedrive(
+        #     os.path.join(ProjectPath, NameFile),
+        #     fr"N4WTimeTracking - Science Timesheets\{NameFile}",
+        #     account_hint="The Nature Conservancy",  # o parte del nombre de la empresa
+        #     overwrite=True
+        # )
 
         messagebox.showinfo("Completed", "N4W Facility process successfully completed.")
 
@@ -4093,6 +4037,9 @@ class TimesheetApp:
         # Deshabilitar botones al inicio
         self.disable_all_action_buttons()
 
+        # Forzar actualización inmediata de la UI
+        self.app.update_idletasks()
+
         try:
             if database_path is None:
                 database_path = self.projects_database.get()
@@ -4112,6 +4059,9 @@ class TimesheetApp:
         """Genera reporte de reuniones."""
         # Deshabilitar botones al inicio
         self.disable_all_action_buttons()
+
+        # Forzar actualización inmediata de la UI
+        self.app.update_idletasks()
 
         try:
             start_date = datetime.strptime(self.start_date_entry.get(), '%Y-%m-%d')
@@ -4133,6 +4083,9 @@ class TimesheetApp:
         """Llena formularios Deltek."""
         # Deshabilitar botones al inicio
         self.disable_all_action_buttons()
+
+        # Forzar actualización inmediata de la UI
+        self.app.update_idletasks()
 
         try:
             user_id = self.email_entry_deltek.get()
@@ -4159,6 +4112,9 @@ class TimesheetApp:
         """Llena formularios N4W Facility."""
         # Deshabilitar botones al inicio
         self.disable_all_action_buttons()
+
+        # Forzar actualización inmediata de la UI
+        self.app.update_idletasks()
 
         try:
             email = self.email_entry_CodeN4W.get()
