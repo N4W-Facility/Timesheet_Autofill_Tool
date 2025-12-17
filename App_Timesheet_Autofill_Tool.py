@@ -100,6 +100,22 @@ progress_window = None
 progress_bar = None
 
 # =============================================================================
+# FUNCIONES HELPER
+# =============================================================================
+def get_date_columns(df):
+    """
+    Detecta columnas de fecha en un DataFrame con formato YYYY-MM-DD.
+
+    Args:
+        df (pd.DataFrame): DataFrame a analizar
+
+    Returns:
+        list: Lista de nombres de columnas que contienen fechas
+    """
+    date_pattern = re.compile(r'\d{4}-\d{2}-\d{2}')
+    return [col for col in df.columns if date_pattern.search(str(col))]
+
+# =============================================================================
 # CLASE TOOLTIP
 # =============================================================================
 class ToolTip:
@@ -713,7 +729,7 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     df_deltek.loc[excepted_projects, 'Prorate'] = -1  # Marcador especial para exceptuados
 
     # Identificar columnas de fechas
-    date_columns = [col for col in df_deltek.columns if '2024-' in col or '2025-' in col]
+    date_columns = get_date_columns(df_deltek)
     if not date_columns:
         print("No date columns found in Deltek file")
         return
@@ -1097,8 +1113,8 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
             project_details = {}
 
         # Obtener columnas de fechas
-        date_columns_orig = [col for col in df_original.columns if '2024-' in col or '2025-' in col]
-        date_columns_pror = [col for col in df_prorated.columns if '2024-' in col or '2025-' in col]
+        date_columns_orig = get_date_columns(df_original)
+        date_columns_pror = get_date_columns(df_prorated)
 
         # Agregar horas por Code (sumar todos los earnings)
         original_hours = df_original.groupby('Code')[date_columns_orig].sum().sum(axis=1)
@@ -1749,7 +1765,7 @@ def Lookup_UserName_Outlook(email: str) -> Optional[Dict[str, str]]:
 
     try:
         # Inicia Outlook (o se conecta a una instancia existente)
-        outlook = win32com.client.gencache.EnsureDispatch("Outlook.Application")
+        outlook = win32com.client.Dispatch("Outlook.Application")
         session = outlook.Session  # MAPI Namespace
 
         # --- 1) Resolver en directorio (Exchange/365) ---
@@ -2106,7 +2122,7 @@ def CreateExcel_N4WFormat(archivo_csv, email_empleado, nombre_empleado, ruta_gua
     df = pd.read_csv(archivo_csv)
 
     # Obtener las columnas de fechas (todas las que tienen formato de fecha)
-    columnas_fecha = [col for col in df.columns if '2025-' in col and '00:00:00' in col]
+    columnas_fecha = [col for col in get_date_columns(df) if '00:00:00' in col]
 
     # Convertir columnas de fecha a datetime
     fechas = []
@@ -3114,7 +3130,7 @@ def validate_deltek_file_weeks(deltek_csv_path):
         df = pd.read_csv(deltek_csv_path)
         
         # Identificar columnas de fechas (pueden tener timestamp)
-        date_columns = [col for col in df.columns if '2024-' in col or '2025-' in col]
+        date_columns = get_date_columns(df)
         
         if not date_columns:
             return False, "No date columns found in 02-Deltek.csv file.", None, None
@@ -3503,7 +3519,7 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
                               ruta_guardado=os.path.join(ProjectPath, NameFile),
                               archivo_base_datos=PathDB_N4W_Box)
 
-        Enviar archivo a OneDrive
+        # Enviar archivo a OneDrive
         put_file_in_onedrive(
             os.path.join(ProjectPath, NameFile),
             fr"N4WTimeTracking - Science Timesheets\{NameFile}",
