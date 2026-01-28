@@ -502,14 +502,11 @@ def show_project_selection_window(df_projects: pd.DataFrame, database_path: str 
     project_details = {}
     try:
         if database_path and os.path.exists(database_path):
-            df_n4w_projects = pd.read_excel(database_path, sheet_name='N4W-Projects')
-            df_tnc_projects = pd.read_excel(database_path, sheet_name='TNC-Projects')
-            df_all_projects = pd.concat([df_n4w_projects, df_tnc_projects], ignore_index=True)
+            df_all_projects = pd.read_excel(database_path, sheet_name='N4W-Projects')
 
             for _, row in df_all_projects.iterrows():
                 project_details[row['Code']] = {
-                    'Project_Name': row.get('Description', 'N/A'),
-                    'Project_ID': row.get('Project ID', ''),
+                    'Task_Name': row.get('Task Name', 'N/A'),
                 }
     except Exception as e:
         print(f"Warning: Could not load project database: {e}")
@@ -629,14 +626,12 @@ def show_project_selection_window(df_projects: pd.DataFrame, database_path: str 
 
     ctk.CTkLabel(headers_frame, text="", width=40).grid(row=0, column=0, padx=5, pady=8)  # Checkbox column
     ctk.CTkLabel(headers_frame, text="Code", font=ctk.CTkFont(weight="bold"), width=100).grid(row=0, column=1, padx=5, pady=8, sticky="w")
-    ctk.CTkLabel(headers_frame, text="Project Name", font=ctk.CTkFont(weight="bold"), width=300).grid(row=0, column=2, padx=5, pady=8, sticky="w")
-    ctk.CTkLabel(headers_frame, text="Project ID", font=ctk.CTkFont(weight="bold"), width=150).grid(row=0, column=3, padx=5, pady=8, sticky="w")
+    ctk.CTkLabel(headers_frame, text="Task Name", font=ctk.CTkFont(weight="bold"), width=450).grid(row=0, column=2, padx=5, pady=8, sticky="w")
 
     # Filas de proyectos con checkboxes
     for i, code in enumerate(sorted(unique_codes)):
         details = project_details.get(code, {})
-        project_name = details.get('Project_Name', 'N/A')
-        project_id = details.get('Project_ID', 'N/A')
+        task_name = details.get('Task_Name', 'N/A')
 
         row_color = COLORS['bg_primary'] if i % 2 == 0 else COLORS['bg_secondary']
         row_frame = ctk.CTkFrame(list_frame, fg_color=row_color, corner_radius=4)
@@ -657,8 +652,7 @@ def show_project_selection_window(df_projects: pd.DataFrame, database_path: str 
         checkbox.grid(row=0, column=0, padx=5, pady=8)
 
         ctk.CTkLabel(row_frame, text=code, width=100, anchor="w").grid(row=0, column=1, padx=5, pady=8, sticky="w")
-        ctk.CTkLabel(row_frame, text=project_name, width=300, anchor="w").grid(row=0, column=2, padx=5, pady=8, sticky="w")
-        ctk.CTkLabel(row_frame, text=str(project_id), width=150, anchor="w").grid(row=0, column=3, padx=5, pady=8, sticky="w")
+        ctk.CTkLabel(row_frame, text=task_name, width=450, anchor="w").grid(row=0, column=2, padx=5, pady=8, sticky="w")
 
     # Botones de acción
     buttons_frame = ctk.CTkFrame(selection_window, fg_color="transparent")
@@ -698,7 +692,7 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     Redistribuye horas de proyectos virtuales a proyectos reales basado en tipos de earning.
 
     Args:
-        deltek_path (str): Ruta al archivo 02-Deltek.csv
+        deltek_path (str): Ruta al archivo 02-Timesheet.csv
         n4w_task_details_path (str): Ruta al archivo N4W_Task_Details.xlsx
         output_path (str): Ruta para archivo de salida con horas redistribuidas
         database_path (str): Ruta al archivo de base de datos con proyectos (opcional)
@@ -723,9 +717,9 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
     # Agregar información de prorate al dataframe deltek
     df_deltek['Prorate'] = df_deltek['Code'].map(prorate_dict).fillna(0).astype(int)
 
-    # Identificar proyectos exceptuados (P100001 y otros códigos especiales externos)
+    # Identificar proyectos exceptuados (códigos XX)
     # Estos proyectos NO participan en redistribución: ni dan ni reciben horas
-    excepted_projects = df_deltek['Project ID'] == 'P100001'
+    excepted_projects = df_deltek['Code'].astype(str).str.upper().str.startswith('XX')
     df_deltek.loc[excepted_projects, 'Prorate'] = -1  # Marcador especial para exceptuados
 
     # Identificar columnas de fechas
@@ -787,232 +781,116 @@ def redistribute_hours_by_earning(deltek_path: str, n4w_task_details_path: str, 
         print("No projects selected for redistribution. Exiting.")
         return
 
-    # IMPORTANTE: Guardar horas originales de proyectos seleccionados ANTES de redistribución
-    # Esto nos permitirá calcular cuántas horas recibió cada proyecto del prorate
-    df_real_selected_original = df_real_selected.copy()
-
     # Inicializar dataframe resultado con proyectos reales seleccionados
     df_result = df_real_selected.copy()
 
-    # Procesar cada proyecto virtual
+    # Procesar cada proyecto virtual - distribuir proporcionalmente entre proyectos reales
     for idx, virtual_row in df_virtual.iterrows():
-        earning_type = virtual_row['Earning']
         project_code = virtual_row['Code']
 
-        print(f"Processing virtual project {project_code} with Earning={earning_type}")
+        print(f"Processing virtual project {project_code}")
 
         # Obtener horas a redistribuir
         hours_to_redistribute = virtual_row[date_columns].values
 
-        if earning_type == '1':  # Earning regular
-            # Distribuir proporcionalmente entre proyectos reales SELECCIONADOS
-            if len(df_real_selected) > 0:
-                weights = get_distribution_weights(df_real_selected, date_columns)
+        # Distribuir proporcionalmente entre proyectos reales SELECCIONADOS
+        if len(df_real_selected) > 0:
+            weights = get_distribution_weights(df_real_selected, date_columns)
 
-                # Agregar horas distribuidas a proyectos reales seleccionados
-                for real_idx in df_real_selected.index:
-                    weight = weights.loc[real_idx]
-                    additional_hours = hours_to_redistribute * weight
-
-                    # Encontrar fila correspondiente en dataframe resultado
-                    result_idx = df_result[df_result['Code'] == df_real_selected.loc[real_idx, 'Code']].index[0]
-                    df_result.loc[result_idx, date_columns] += additional_hours
-
-        else:  # Earning no regular (H, V, etc.)
-            # Crear nuevas filas para cada proyecto real SELECCIONADO con el mismo tipo de earning
+            # Agregar horas distribuidas a proyectos reales seleccionados
             for real_idx in df_real_selected.index:
-                real_project = df_real_selected.loc[real_idx].copy()
-
-                # Calcular peso proporcional para este proyecto real
-                weights = get_distribution_weights(df_real_selected, date_columns)
                 weight = weights.loc[real_idx]
+                additional_hours = hours_to_redistribute * weight
 
-                # Crear nueva fila con tipo de earning del proyecto virtual
-                new_row = real_project.copy()
-                new_row['Earning'] = earning_type
+                # Encontrar fila correspondiente en dataframe resultado
+                result_idx = df_result[df_result['Code'] == df_real_selected.loc[real_idx, 'Code']].index[0]
+                df_result.loc[result_idx, date_columns] += additional_hours
 
-                # Asignar horas proporcionales
-                distributed_hours = hours_to_redistribute * weight
-                new_row[date_columns] = distributed_hours
-
-                # Agregar nueva fila al resultado
-                df_result = pd.concat([df_result, new_row.to_frame().T], ignore_index=True)
-
-    # Agrupar por todas las columnas excepto las de fechas y sumar (en caso de duplicados)
-    # IMPORTANTE: Esto se hace ANTES de agregar proyectos no seleccionados
-    groupby_columns = [col for col in df_result.columns if col not in date_columns]
+    # Agrupar por Code y sumar (en caso de duplicados)
+    groupby_columns = ['Code']
     df_result = df_result.groupby(groupby_columns, as_index=False)[date_columns].sum()
 
     # Redondear horas a precisión de 0.25
     df_result[date_columns] = df_result[date_columns].applymap(lambda x: round(x * 4) / 4)
 
-    # Validar y ajustar día por día y earning por earning
-    # IMPORTANTE: Los ajustes se aplican SOLO a proyectos seleccionados (antes de agregar no seleccionados)
-    print("Validating hours day by day and earning by earning (only on selected projects)...")
+    # Validar y ajustar día por día
+    print("Validating hours day by day (only on selected projects)...")
 
-    # Crear resúmenes por día y earning para datos originales
-    # IMPORTANTE: Solo considerar proyectos que participan en redistribución
-    # (virtuales + reales seleccionados, excluyendo reales NO seleccionados y exceptuados)
+    # Crear resúmenes por día para datos originales
     df_original_for_comparison = pd.concat([df_virtual, df_real_selected], ignore_index=True)
-    original_summary = df_original_for_comparison.groupby('Earning')[date_columns].sum()
+    original_totals = df_original_for_comparison[date_columns].sum()
 
-    # Crear resúmenes por día y earning para datos con prorate (solo proyectos seleccionados)
-    prorate_summary = df_result.groupby('Earning')[date_columns].sum()
+    # Crear resúmenes por día para datos con prorate
+    prorate_totals = df_result[date_columns].sum()
 
-    # Revisar cada earning
+    # Revisar cada día
     total_adjustments = 0
-    for earning in original_summary.index:
-        if earning not in prorate_summary.index:
-            print(f"Warning: Earning {earning} not found in prorate results")
-            continue
+    for date_col in date_columns:
+        original_hours = original_totals[date_col]
+        prorate_hours = prorate_totals[date_col]
+        difference = original_hours - prorate_hours
 
-        # Revisar cada día para este earning
-        for date_col in date_columns:
-            original_hours = original_summary.loc[earning, date_col]
-            prorate_hours = prorate_summary.loc[earning, date_col]
-            difference = original_hours - prorate_hours
+        # Si hay diferencia significativa, ajustar
+        if abs(difference) > 0.001:
+            print(f"Adjusting {difference:.3f} hours on {date_col}")
 
-            # Si hay diferencia significativa, ajustar
-            if abs(difference) > 0.001:  # Tolerancia para errores de punto flotante
-                print(f"Adjusting {difference:.3f} hours for Earning {earning} on {date_col}")
+            # Ordenar proyectos por horas (descendente)
+            sorted_projects = df_result.sort_values(by=date_col, ascending=False)
 
-                # Obtener lista de proyectos con este earning
-                earning_projects = df_result[df_result['Earning'] == earning].copy()
+            for idx in sorted_projects.index:
+                current_hours = df_result.loc[idx, date_col]
+                project_code = df_result.loc[idx, 'Code']
 
                 if difference > 0:
-                    # AGREGAR horas: ordenar por horas totales (descendente) y aplicar al proyecto con más horas
-                    earning_projects = earning_projects.sort_values(by=date_col, ascending=False)
+                    # AGREGAR horas al proyecto con más horas
+                    df_result.loc[idx, date_col] += difference
+                    df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
+                    print(f"  → Added {difference:.3f}h to project {project_code}")
+                    total_adjustments += 1
+                    break
                 else:
-                    # RESTAR horas: ordenar por DIFERENCIA (horas recibidas del prorate), descendente
-                    # Calcular diferencia = horas actuales - horas originales para cada proyecto
-                    prorate_diffs = {}  # Diccionario para guardar diferencias
-
-                    for idx in earning_projects.index:
-                        project_code = df_result.loc[idx, 'Code']
-                        current_hours_project = df_result.loc[idx, date_col]
-
-                        # Buscar horas originales de este proyecto (antes de redistribución)
-                        original_match = df_real_selected_original[
-                            (df_real_selected_original['Code'] == project_code) &
-                            (df_real_selected_original['Earning'] == earning)
-                        ]
-
-                        if len(original_match) > 0:
-                            original_hours_project = original_match[date_col].values[0]
-                        else:
-                            # Si no existe en original, significa que es una fila nueva creada por prorate
-                            original_hours_project = 0
-
-                        # Diferencia = cuántas horas recibió este proyecto del prorate
-                        prorate_diff_value = current_hours_project - original_hours_project
-                        prorate_diffs[idx] = prorate_diff_value
-                        earning_projects.loc[idx, 'prorate_diff'] = prorate_diff_value
-
-                        print(f"    DEBUG: Project {project_code} - Original: {original_hours_project:.2f}h, Current: {current_hours_project:.2f}h, Diff: {prorate_diff_value:.2f}h")
-
-                    # Filtrar solo proyectos que recibieron horas (prorate_diff > 0)
-                    earning_projects = earning_projects[earning_projects['prorate_diff'] > 0.001]
-
-                    if len(earning_projects) == 0:
-                        print(f"    WARNING: No projects with positive prorate_diff found for Earning {earning} on {date_col}")
-
-                    # Ordenar por diferencia (mayor a menor) - quitarle primero a quien más recibió
-                    earning_projects = earning_projects.sort_values(by='prorate_diff', ascending=False)
-
-                remaining_difference = difference
-                adjustment_made = False
-
-                # Iterar sobre proyectos ordenados
-                for idx in earning_projects.index:
-                    current_hours = df_result.loc[idx, date_col]
-                    project_code = df_result.loc[idx, 'Code']
-
-                    if abs(remaining_difference) < 0.001:
-                        # Ya se completó el ajuste
-                        break
-
-                    if remaining_difference > 0:
-                        # AGREGAR horas: aplicar todo al proyecto con más horas
-                        df_result.loc[idx, date_col] += remaining_difference
+                    # RESTAR horas del proyecto con más horas (si tiene suficiente)
+                    hours_to_subtract = abs(difference)
+                    if current_hours >= hours_to_subtract:
+                        df_result.loc[idx, date_col] -= hours_to_subtract
                         df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
-
-                        print(f"  → Added {remaining_difference:.3f}h to project {project_code} (was {current_hours:.3f}h, now {df_result.loc[idx, date_col]:.3f}h)")
-                        adjustment_made = True
+                        print(f"  → Subtracted {hours_to_subtract:.3f}h from project {project_code}")
                         total_adjustments += 1
-                        remaining_difference = 0
                         break
-
-                    else:
-                        # RESTAR horas: verificar diferencia disponible para evitar quitar horas originales
-                        hours_to_subtract = abs(remaining_difference)
-
-                        # Obtener cuántas horas recibió este proyecto del prorate
-                        if difference < 0:
-                            # Estamos en modo resta, usar el diccionario prorate_diffs
-                            prorate_diff = prorate_diffs.get(idx, 0) if 'prorate_diffs' in locals() else 0
-                        else:
-                            # En modo suma, no aplica
-                            prorate_diff = current_hours
-
-                        if prorate_diff >= hours_to_subtract:
-                            # Proyecto recibió suficientes horas del prorate: restar todo lo necesario
-                            df_result.loc[idx, date_col] -= hours_to_subtract
-                            df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
-
-                            print(f"  → Subtracted {hours_to_subtract:.3f}h from project {project_code} (was {current_hours:.3f}h, now {df_result.loc[idx, date_col]:.3f}h, received {prorate_diff:.3f}h from prorate)")
-                            adjustment_made = True
-                            total_adjustments += 1
-                            remaining_difference = 0
-                            break
-
-                        elif prorate_diff > 0:
-                            # Proyecto recibió menos horas que las necesarias: restar solo lo que recibió del prorate
-                            df_result.loc[idx, date_col] -= prorate_diff
-                            df_result.loc[idx, date_col] = round(df_result.loc[idx, date_col] * 4) / 4
-                            remaining_difference += prorate_diff  # Actualizar diferencia pendiente
-
-                            print(f"  → Subtracted {prorate_diff:.3f}h from project {project_code} (was {current_hours:.3f}h, now {df_result.loc[idx, date_col]:.3f}h) - {abs(remaining_difference):.3f}h still pending")
-                            adjustment_made = True
-                            total_adjustments += 1
-                            # Continuar con siguiente proyecto
-
-                        # Si prorate_diff <= 0, este proyecto no recibió horas, saltar al siguiente
-
-                if not adjustment_made or abs(remaining_difference) > 0.001:
-                    if not adjustment_made:
-                        print(f"  → WARNING: Could not find project to adjust for Earning {earning} on {date_col}")
-                    else:
-                        print(f"  → WARNING: Partial adjustment - could not subtract remaining {abs(remaining_difference):.3f}h for Earning {earning} on {date_col}")
 
     if total_adjustments > 0:
         print(f"Total adjustments made: {total_adjustments}")
     else:
-        print("No adjustments needed - all day/earning totals match perfectly")
+        print("No adjustments needed - all day totals match perfectly")
+
+    # Columnas base: Code + fechas
+    base_columns = ['Code'] + date_columns
 
     # AHORA agregar proyectos reales NO seleccionados al resultado final (con horas originales)
-    # IMPORTANTE: Esto se hace DESPUÉS de todos los ajustes para que no se les asignen horas
     if len(df_real_not_selected) > 0:
-        # Remover columnas auxiliares antes de agregar
-        if 'Prorate' in df_real_not_selected.columns:
-            df_real_not_selected = df_real_not_selected.drop('Prorate', axis=1)
-        if 'Redistribute_Target' in df_real_not_selected.columns:
-            df_real_not_selected = df_real_not_selected.drop('Redistribute_Target', axis=1)
-        df_result = pd.concat([df_result, df_real_not_selected], ignore_index=True)
+        df_not_selected_clean = df_real_not_selected[base_columns].copy()
+        df_result = pd.concat([df_result, df_not_selected_clean], ignore_index=True)
         print(f"Added {len(df_real_not_selected)} non-selected projects with original hours to final result")
 
     # Agregar proyectos exceptuados al resultado final (sin modificaciones)
     if len(df_excepted) > 0:
-        # Remover columna prorate de proyectos exceptuados antes de agregar
-        if 'Prorate' in df_excepted.columns:
-            df_excepted = df_excepted.drop('Prorate', axis=1)
-        df_result = pd.concat([df_result, df_excepted], ignore_index=True)
+        df_excepted_clean = df_excepted[base_columns].copy()
+        df_result = pd.concat([df_result, df_excepted_clean], ignore_index=True)
         print(f"Added {len(df_excepted)} excepted projects to final result")
 
-    # Remover columnas auxiliares del resultado final
-    if 'Prorate' in df_result.columns:
-        df_result = df_result.drop('Prorate', axis=1)
-    if 'Redistribute_Target' in df_result.columns:
-        df_result = df_result.drop('Redistribute_Target', axis=1)
+    # Agregar Task Name y Grant ID desde la base de datos
+    if database_path and os.path.exists(database_path):
+        try:
+            df_db = pd.read_excel(database_path, sheet_name='N4W-Projects')
+            df_db = df_db[['Code', 'Task Name', 'Grant ID']].drop_duplicates()
+            df_result = df_result.merge(df_db, on='Code', how='left')
+            df_result['Task Name'] = df_result['Task Name'].fillna('')
+            df_result['Grant ID'] = df_result['Grant ID'].fillna('')
+            # Reordenar columnas: Code, Task Name, Grant ID, fechas...
+            final_columns = ['Code', 'Task Name', 'Grant ID'] + date_columns
+            df_result = df_result[final_columns]
+        except Exception as e:
+            print(f"Warning: Could not add Task Name/Grant ID: {e}")
 
     # Guardar resultado
     try:
@@ -1052,8 +930,8 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
     Muestra ventana de comparación entre horas originales y con prorate por código de proyecto.
 
     Args:
-        original_file (str): Ruta al archivo original 02-Deltek.csv
-        prorated_file (str): Ruta al archivo con prorate 03-Deltek_Reallocation.csv
+        original_file (str): Ruta al archivo original 02-Timesheet.csv
+        prorated_file (str): Ruta al archivo con prorate 03-Timesheet_Prorate.csv
         database_path (str): Ruta al archivo de base de datos con proyectos
 
     Returns:
@@ -1068,43 +946,16 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
         project_details = {}
         try:
             if database_path and os.path.exists(database_path):
-                # Leer las hojas N4W_Projects y TNC_Projects
-                df_n4w_projects = pd.read_excel(database_path, sheet_name='N4W-Projects')
-                df_tnc_projects = pd.read_excel(database_path, sheet_name='TNC-Projects')
-
-                # Concatenar ambas hojas
-                df_projects = pd.concat([df_n4w_projects, df_tnc_projects], ignore_index=True)
+                df_projects = pd.read_excel(database_path, sheet_name='N4W-Projects')
 
                 # Crear diccionario con información del proyecto usando Code como clave
                 for _, row in df_projects.iterrows():
-                    # Convertir Activity ID a entero (sin decimales)
-                    activity_id = row.get('Activity ID', '')
-                    if pd.notna(activity_id) and activity_id != '':
-                        try:
-                            activity_id = str(int(float(activity_id)))
-                        except (ValueError, TypeError):
-                            activity_id = str(activity_id)
-                    else:
-                        activity_id = 'N/A'
-
-                    # Project ID y Award ID ya vienen como strings (pueden tener letras)
-                    project_id = row.get('Project ID', 'N/A')
-                    if pd.notna(project_id) and project_id != '':
-                        project_id = str(project_id)
-                    else:
-                        project_id = 'N/A'
-
-                    award_id = row.get('Award ID', 'N/A')
-                    if pd.notna(award_id) and award_id != '':
-                        award_id = str(award_id)
-                    else:
-                        award_id = 'N/A'
+                    task_name = row.get('Task Name', 'N/A')
+                    if pd.isna(task_name) or task_name == '':
+                        task_name = 'N/A'
 
                     project_details[row['Code']] = {
-                        'Project_Name': row.get('Description', 'N/A'),
-                        'Project_ID': project_id,
-                        'Award_ID': award_id,
-                        'Activity_Code': activity_id
+                        'Task_Name': task_name
                     }
             else:
                 print(f"Warning: Database path not provided or file not found: {database_path}")
@@ -1133,10 +984,7 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
             
             comparison_data.append({
                 'Code': code,
-                'Project_Name': details.get('Project_Name', 'N/A'),
-                'Project_ID': details.get('Project_ID', 'N/A'),
-                'Award_ID': details.get('Award_ID', 'N/A'),
-                'Activity_Code': details.get('Activity_Code', 'N/A'),
+                'Task_Name': details.get('Task_Name', 'N/A'),
                 'Without_Prorate': orig_total,
                 'With_Prorate': pror_total,
                 'Difference': pror_total - orig_total
@@ -1202,16 +1050,13 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
         headers_frame.pack(fill="x", pady=(0, 5))
 
         # Definir anchos fijos para columnas
-        col_widths = [80, 250, 100, 100, 100, 80, 80, 80]
+        col_widths = [80, 450, 80, 80, 80]
 
         ctk.CTkLabel(headers_frame, text="Code", font=ctk.CTkFont(weight="bold"), width=col_widths[0]).grid(row=0, column=0, padx=2, pady=8, sticky="w")
-        ctk.CTkLabel(headers_frame, text="Project Name", font=ctk.CTkFont(weight="bold"), width=col_widths[1]).grid(row=0, column=1, padx=2, pady=8, sticky="w")
-        ctk.CTkLabel(headers_frame, text="Project ID", font=ctk.CTkFont(weight="bold"), width=col_widths[2]).grid(row=0, column=2, padx=2, pady=8, sticky="w")
-        ctk.CTkLabel(headers_frame, text="Award ID", font=ctk.CTkFont(weight="bold"), width=col_widths[3]).grid(row=0, column=3, padx=2, pady=8, sticky="w")
-        ctk.CTkLabel(headers_frame, text="Activity", font=ctk.CTkFont(weight="bold"), width=col_widths[4]).grid(row=0, column=4, padx=2, pady=8, sticky="w")
-        ctk.CTkLabel(headers_frame, text="Original", font=ctk.CTkFont(weight="bold"), width=col_widths[5]).grid(row=0, column=5, padx=2, pady=8, sticky="w")
-        ctk.CTkLabel(headers_frame, text="Prorated", font=ctk.CTkFont(weight="bold"), width=col_widths[6]).grid(row=0, column=6, padx=2, pady=8, sticky="w")
-        ctk.CTkLabel(headers_frame, text="Diff", font=ctk.CTkFont(weight="bold"), width=col_widths[7]).grid(row=0, column=7, padx=2, pady=8, sticky="w")
+        ctk.CTkLabel(headers_frame, text="Task Name", font=ctk.CTkFont(weight="bold"), width=col_widths[1]).grid(row=0, column=1, padx=2, pady=8, sticky="w")
+        ctk.CTkLabel(headers_frame, text="Original", font=ctk.CTkFont(weight="bold"), width=col_widths[2]).grid(row=0, column=2, padx=2, pady=8, sticky="w")
+        ctk.CTkLabel(headers_frame, text="Prorated", font=ctk.CTkFont(weight="bold"), width=col_widths[3]).grid(row=0, column=3, padx=2, pady=8, sticky="w")
+        ctk.CTkLabel(headers_frame, text="Diff", font=ctk.CTkFont(weight="bold"), width=col_widths[4]).grid(row=0, column=4, padx=2, pady=8, sticky="w")
 
         # Filas de tabla
         for i, row_data in enumerate(comparison_data):
@@ -1226,19 +1071,16 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
 
             # Usar los mismos anchos fijos que los encabezados
             ctk.CTkLabel(row_frame, text=row_data['Code'], text_color=text_color, width=col_widths[0]).grid(row=0, column=0, padx=2, pady=6, sticky="w")
-            ctk.CTkLabel(row_frame, text=row_data['Project_Name'], text_color=text_color, width=col_widths[1]).grid(row=0, column=1, padx=2, pady=6, sticky="w")
-            ctk.CTkLabel(row_frame, text=row_data['Project_ID'], text_color=text_color, width=col_widths[2]).grid(row=0, column=2, padx=2, pady=6, sticky="w")
-            ctk.CTkLabel(row_frame, text=row_data['Award_ID'], text_color=text_color, width=col_widths[3]).grid(row=0, column=3, padx=2, pady=6, sticky="w")
-            ctk.CTkLabel(row_frame, text=row_data['Activity_Code'], text_color=text_color, width=col_widths[4]).grid(row=0, column=4, padx=2, pady=6, sticky="w")
-            ctk.CTkLabel(row_frame, text=f"{row_data['Without_Prorate']:.1f}", text_color=text_color, width=col_widths[5]).grid(row=0, column=5, padx=2, pady=6, sticky="w")
-            ctk.CTkLabel(row_frame, text=f"{row_data['With_Prorate']:.1f}", text_color=text_color, width=col_widths[6]).grid(row=0, column=6, padx=2, pady=6, sticky="w")
+            ctk.CTkLabel(row_frame, text=row_data['Task_Name'], text_color=text_color, width=col_widths[1]).grid(row=0, column=1, padx=2, pady=6, sticky="w")
+            ctk.CTkLabel(row_frame, text=f"{row_data['Without_Prorate']:.1f}", text_color=text_color, width=col_widths[2]).grid(row=0, column=2, padx=2, pady=6, sticky="w")
+            ctk.CTkLabel(row_frame, text=f"{row_data['With_Prorate']:.1f}", text_color=text_color, width=col_widths[3]).grid(row=0, column=3, padx=2, pady=6, sticky="w")
 
             # Colorear la diferencia
             diff = row_data['Difference']
             diff_color = COLORS['success'] if diff > 0 else (
                 COLORS['warning'] if diff < 0 else COLORS['text_secondary'])
             diff_text = f"+{diff:.1f}" if diff > 0 else f"{diff:.1f}"
-            ctk.CTkLabel(row_frame, text=diff_text, text_color=diff_color, width=col_widths[7]).grid(row=0, column=7, padx=2, pady=6, sticky="w")
+            ctk.CTkLabel(row_frame, text=diff_text, text_color=diff_color, width=col_widths[4]).grid(row=0, column=4, padx=2, pady=6, sticky="w")
 
         # Marco de resumen
         summary_frame = ctk.CTkFrame(comparison_window, fg_color=COLORS['bg_tertiary'], corner_radius=8)
@@ -1288,7 +1130,7 @@ def show_prorate_comparison_window(original_file: str, prorated_file: str, datab
 
         accept_button = ctk.CTkButton(
             button_frame,
-            text="Continue to Deltek",
+            text="Create File",
             command=on_accept,
             width=150,
             height=36,
@@ -1481,17 +1323,23 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
     # ============================================================================
     print("\n[PASO 1] Processing project updates...")
 
-    # Obtener solo los Code que NO están vacíos
+    # Función para verificar si código es especial (empieza con "XX")
+    def es_codigo_especial(code):
+        return str(code).strip().upper().startswith('XX')
+
+    # Obtener solo los Code que NO están vacíos y NO son especiales (XX)
     CodeN4W_ids_validos1 = set()
     for idx in df_base.index:
         CodeN4W_id = df_base.loc[idx, 'Code']
-        if not esta_vacio(CodeN4W_id):
+        if not esta_vacio(CodeN4W_id) and not es_codigo_especial(CodeN4W_id):
             CodeN4W_ids_validos1.add(CodeN4W_id)
 
     task_names = set(df_fuente['Task_Name'].dropna())
 
-    # Verificar que todos los códigos válidos de la base existan en el fuente
-    CodeN4W_ids_validos = {x for x in CodeN4W_ids_validos1 if not (isinstance(x, (int, float)) and not isinstance(x, bool) and x == -1)}
+    # Verificar que todos los códigos válidos de la base existan en el fuente (excluir XX y -1)
+    CodeN4W_ids_validos = {x for x in CodeN4W_ids_validos1
+                          if not (isinstance(x, (int, float)) and not isinstance(x, bool) and x == -1)
+                          and not es_codigo_especial(x)}
 
     faltantes = CodeN4W_ids_validos - task_names
 
@@ -1501,39 +1349,29 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
     # Crear diccionario para mapear los datos
     df_fuente_indexed = df_fuente.set_index('Task_Name')
 
-    # Actualizar las columnas fila por fila
+    # Actualizar las columnas fila por fila (ignorar códigos XX)
     for idx in df_base.index:
         CodeN4W_id = df_base.loc[idx, 'Code']
 
+        # Ignorar códigos especiales (XX)
+        if es_codigo_especial(CodeN4W_id):
+            print(f"  → Ignoring special code: {CodeN4W_id}")
+            continue
+
         if not esta_vacio(CodeN4W_id) and CodeN4W_id in df_fuente_indexed.index:
-            # Actualizar desde el fuente
+            # Actualizar solo Task Name y Grant ID
             df_base.loc[idx, 'Description'] = df_fuente_indexed.loc[CodeN4W_id, 'Task_Name_Description']
-            df_base.loc[idx, 'Project ID'] = df_fuente_indexed.loc[CodeN4W_id, 'Project_ID']
-
-            # Activity ID - si está vacío en fuente, poner "0"
-            activity_code = df_fuente_indexed.loc[CodeN4W_id, 'Activity_Code']
-            if esta_vacio(activity_code):
-                df_base.loc[idx, 'Activity ID'] = "0"
-                print(f"Empty Activity ID for {CodeN4W_id}, assigning '0'")
-            else:
-                df_base.loc[idx, 'Activity ID'] = activity_code
-
-            # Award ID - si está vacío en fuente, poner "0"
-            award_id = df_fuente_indexed.loc[CodeN4W_id, 'Award_ID']
-            if esta_vacio(award_id):
-                df_base.loc[idx, 'Award ID'] = "0"
-            else:
-                df_base.loc[idx, 'Award ID'] = award_id
+            df_base.loc[idx, 'Task Name'] = df_fuente_indexed.loc[CodeN4W_id, 'WD_TaskName']
+            df_base.loc[idx, 'Grant ID'] = df_fuente_indexed.loc[CodeN4W_id, 'WD_GrantID']
 
             # Actualizar Category (concatenación de Code | Description)
             df_base.loc[idx, 'Category'] = f"{CodeN4W_id} | {df_base.loc[idx, 'Description']}"
 
         elif esta_vacio(CodeN4W_id):
-            # Si Code está vacío, poner todos en "0"
+            # Si Code está vacío, poner en "0"
             df_base.loc[idx, 'Description'] = "0"
-            df_base.loc[idx, 'Project ID'] = "0"
-            df_base.loc[idx, 'Activity ID'] = "0"
-            df_base.loc[idx, 'Award ID'] = "0"
+            df_base.loc[idx, 'Task Name'] = "0"
+            df_base.loc[idx, 'Grant ID'] = "0"
             df_base.loc[idx, 'Category'] = "0"
 
     # ============================================================================
@@ -1546,6 +1384,10 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
     # Iterar sobre la BASE DE DATOS (no sobre df_fuente)
     for idx in df_base.index:
         code_actual = df_base.loc[idx, 'Code']
+
+        # Ignorar códigos especiales (XX) - no eliminar ni procesar
+        if es_codigo_especial(code_actual):
+            continue
 
         if code_actual == -1:
             # Condición 3: Valor de -1 en Code
@@ -1637,14 +1479,13 @@ def Update_DataBase_With_BoxFile(archivo_base, archivo_fuente):
             fila_excel = idx + 2  # +2 porque índice empieza en 0 y hay encabezado
             ws.Cells(fila_excel, 1).Value = row['Code']  # Columna A
             ws.Cells(fila_excel, 2).Value = row['Description']  # Columna B
-            ws.Cells(fila_excel, 3).Value = row['Project ID']  # Columna C
-            ws.Cells(fila_excel, 4).Value = row['Activity ID']  # Columna D
-            ws.Cells(fila_excel, 5).Value = row['Award ID']  # Columna E
-            ws.Cells(fila_excel, 6).Value = row['Category']  # Columna F
+            ws.Cells(fila_excel, 3).Value = row['Task Name']  # Columna C
+            ws.Cells(fila_excel, 4).Value = row['Grant ID']  # Columna D
+            ws.Cells(fila_excel, 5).Value = row['Category']  # Columna E
 
             # Escribir Include si existe en el DataFrame
             if 'Include' in df_base.columns:
-                ws.Cells(fila_excel, 7).Value = row['Include']  # Columna G
+                ws.Cells(fila_excel, 6).Value = row['Include']  # Columna F
 
         # Si se eliminaron filas del DataFrame, borrar las filas sobrantes del Excel
         ultima_fila_excel = ws.UsedRange.Rows.Count
@@ -1738,10 +1579,11 @@ def readDataBase(filepath):
     Returns:
         pd.DataFrame: Datos combinados de todas las hojas
     """
-    df1 = pd.read_excel(filepath, sheet_name='TNC-Employee')
+    #df1 = pd.read_excel(filepath, sheet_name='TNC-Employee')
     df2 = pd.read_excel(filepath, sheet_name='N4W-Projects')
-    df3 = pd.read_excel(filepath, sheet_name='TNC-Projects')
-    return pd.concat([df1, df2, df3], ignore_index=True)
+    #df3 = pd.read_excel(filepath, sheet_name='TNC-Projects')
+    # return pd.concat([df1, df2, df3], ignore_index=True)
+    return df2
 
 
 def Lookup_UserName_Outlook(email: str) -> Optional[Dict[str, str]]:
@@ -2121,6 +1963,9 @@ def CreateExcel_N4WFormat(archivo_csv, email_empleado, nombre_empleado, ruta_gua
     # Leer el CSV
     df = pd.read_csv(archivo_csv)
 
+    # Reemplazar códigos XX por OF0104
+    df.loc[df['Code'].astype(str).str.upper().str.startswith('XX'), 'Code'] = 'OF0104'
+
     # Obtener las columnas de fechas (todas las que tienen formato de fecha)
     columnas_fecha = [col for col in get_date_columns(df) if '00:00:00' in col]
 
@@ -2133,8 +1978,8 @@ def CreateExcel_N4WFormat(archivo_csv, email_empleado, nombre_empleado, ruta_gua
     # Filtrar filas: eliminar las que tengan Code que inicien con "TNC"
     df_filtrado = df[~df['Code'].str.startswith('TNC', na=False)]
 
-    # Agrupar por proyecto eliminando la columna 'Earning' y sumando las horas
-    columnas_agrupacion = ['Code', 'Project ID', 'Activity ID', 'Award ID']
+    # Agrupar por proyecto y sumar las horas
+    columnas_agrupacion = ['Code']
     df_agrupado = df_filtrado.groupby(columnas_agrupacion, as_index=False)[columnas_fecha].sum()
 
     # Crear lista para almacenar las filas del Excel final
@@ -2326,25 +2171,6 @@ def Download_DataBase_N4W_Box(url_box, salida):
 
 
 # =============================================================================
-# GESTIÓN DE BASE DE DATOS
-# =============================================================================
-def readDataBase(filepath):
-    """
-    Lee y combina datos de múltiples hojas de Excel.
-
-    Args:
-        filepath (str): Ruta al archivo Excel
-
-    Returns:
-        pd.DataFrame: Datos combinados de todas las hojas
-    """
-    df1 = pd.read_excel(filepath, sheet_name='TNC-Employee')
-    df2 = pd.read_excel(filepath, sheet_name='N4W-Projects')
-    df3 = pd.read_excel(filepath, sheet_name='TNC-Projects')
-    return pd.concat([df1, df2, df3], ignore_index=True)
-
-
-# =============================================================================
 # GESTIÓN DE CATEGORÍAS DE OUTLOOK
 # =============================================================================
 
@@ -2390,7 +2216,7 @@ def update_categories(filepath, url_box="https://tnc.box.com/s/6y6iswltvf26pxrk3
         # Descarga archivo de códigos del N4W
         Download_DataBase_N4W_Box(url_box, PathDB_N4W_Box)
 
-        # Actualizar base de datos
+        # Actualizar base de datos (Ojo, apago este modulo para workday)
         Update_DataBase_With_BoxFile(filepath, PathDB_N4W_Box)
 
         # Leer y validar datos
@@ -2651,18 +2477,18 @@ def generate_report(start_date, end_date, database_name, url_box="https://tnc.bo
             if len(results.columns) != 0:
                 break
 
-        # Procesar categorías
-        results[['Earning', 'Category']] = results['Category'].apply(
-            lambda x: pd.Series(process_category(x))
-        )
+        # # Procesar categorías
+        # results[['Earning', 'Category']] = results['Category'].apply(
+        #     lambda x: pd.Series(process_category(x))
+        # )
 
         # Agregar y reorganizar datos
-        tmp = results.groupby(by=['Date', 'Category', 'Earning'], as_index=False)['Hours'].sum()
+        tmp = results.groupby(by=['Date', 'Category'], as_index=False)['Hours'].sum()
 
         # Redondear horas a precisión de 0.25
         tmp['Hours'] = tmp['Hours'].apply(lambda x: round(x * 4) / 4)
-        tmp = tmp.pivot(index=['Category', 'Earning'], columns='Date', values='Hours').fillna(0)
-        tmp = tmp.reset_index(level='Earning')
+        tmp = tmp.pivot(index=['Category'], columns='Date', values='Hours').fillna(0)
+        # tmp = tmp.reset_index(level='Earning')
 
         # Crear reporte con fechas completas
         report = pd.DataFrame(columns=pd.date_range(start_date, end_date, freq='D'))
@@ -2680,31 +2506,31 @@ def generate_report(start_date, end_date, database_name, url_box="https://tnc.bo
         # Combinar con códigos N4W
         n4w_codes = readDataBase(database_name)
         n4w_codes = n4w_codes.dropna(subset=['Code']).fillna(0).replace('XXXXXX', 0)
-        n4w_codes['Activity ID'] = n4w_codes['Activity ID'].astype(int)
-        n4w_codes['Project ID'] = n4w_codes['Project ID'].astype(str)
-        n4w_codes['Award ID'] = n4w_codes['Award ID'].astype(str)
+        # n4w_codes['Activity ID'] = n4w_codes['Activity ID'].astype(int)
+        # n4w_codes['Project ID'] = n4w_codes['Project ID'].astype(str)
+        # n4w_codes['Award ID'] = n4w_codes['Award ID'].astype(str)
         n4w_codes = n4w_codes.set_index(['Code'])
 
         # Crear archivo final
         output_dir = os.path.dirname(database_name)
         value = pd.merge(n4w_codes, report, left_index=True, right_index=True)
         value = value.drop(columns=['Description', 'Category', 'Include'])
-        value.columns = [str(col) if pd.notnull(col) else 'Earning' for col in value.columns]
+        # value.columns = [str(col) if pd.notnull(col) else 'Earning' for col in value.columns]
 
-        # Reorganizar columnas
-        cols = value.columns.tolist()
-        earning_col = 'Earning'
-        cols.insert(3, cols.pop(cols.index(earning_col)))
-        value = value[cols]
-
-        # Mapear códigos de ganancia
-        earning_mapping = {
-            'REGULAR': '1', 'LWOP': '17', 'MATERNITY': '301', 'ADMIN LEAVE': '6',
-            'PARENTAL LEAVE': '69', 'Compensation': 'C', 'FURLOUGH': 'FRL',
-            'PUBLIC HOLIDAY': 'H', 'Medical Leave': 'ML', 'Personal Leave Day': 'PLD',
-            'SICK': 'S', 'VACATION': 'V'
-        }
-        value['Earning'] = value['Earning'].map(earning_mapping)
+        # # Reorganizar columnas
+        # cols = value.columns.tolist()
+        # earning_col = 'Earning'
+        # cols.insert(3, cols.pop(cols.index(earning_col)))
+        # value = value[cols]
+        #
+        # # Mapear códigos de ganancia
+        # earning_mapping = {
+        #     'REGULAR': '1', 'LWOP': '17', 'MATERNITY': '301', 'ADMIN LEAVE': '6',
+        #     'PARENTAL LEAVE': '69', 'Compensation': 'C', 'FURLOUGH': 'FRL',
+        #     'PUBLIC HOLIDAY': 'H', 'Medical Leave': 'ML', 'Personal Leave Day': 'PLD',
+        #     'SICK': 'S', 'VACATION': 'V'
+        # }
+        # value['Earning'] = value['Earning'].map(earning_mapping)
 
         # Eliminar última columna (día adicional)
         value = value.drop(columns=value.columns[-1])
@@ -2712,7 +2538,7 @@ def generate_report(start_date, end_date, database_name, url_box="https://tnc.bo
         # Guardar archivos
         create_folder(output_dir)
         results.to_excel(os.path.join(output_dir, '01-Report.xlsx'))
-        value.to_csv(os.path.join(output_dir, '02-Deltek.csv'), index_label='Code')
+        value.to_csv(os.path.join(output_dir, '02-Timesheet.csv'), index_label='Code')
 
         messagebox.showinfo("Completed", "Process successfully completed.")
 
@@ -2758,17 +2584,17 @@ def fill_deltek(position, login_id, password, database_name, prorate=False,
         # # Actualizar base de datos
         # Update_DataBase_With_BoxFile(database_name, PathDB_N4W_Box)
 
-        FileTimeDeltek = os.path.join(ProjectPath, '02-Deltek.csv')
+        FileTimeDeltek = os.path.join(ProjectPath, '02-Timesheet.csv')
         if prorate:
             # Example paths - adjust as needed
-            output_file = os.path.join(ProjectPath, '03-Deltek_Reallocation.csv')
+            output_file = os.path.join(ProjectPath, '03-Timesheet_Prorate.csv')
 
             # Run redistribution
             redistribute_hours_by_earning(FileTimeDeltek, PathDB_N4W_Box, output_file, database_name)
 
             # Show comparison window and get user confirmation
             user_approved = show_prorate_comparison_window(
-                os.path.join(ProjectPath, '02-Deltek.csv'),
+                os.path.join(ProjectPath, '02-Timesheet.csv'),
                 output_file,
                 database_name
             )
@@ -3084,6 +2910,53 @@ def fill_deltek(position, login_id, password, database_name, prorate=False,
         if app_instance:
             app_instance.enable_all_action_buttons()
 
+# =============================================================================
+# WORKDAY FILE
+# =============================================================================
+def Create_Workday_File(prorate, database_name):
+    try:
+        # Ruta del proyecto
+        ProjectPath = os.path.dirname(database_name)
+
+        # Ruta de salida de archivo de códigos del N4W
+        PathDB_N4W_Box = os.path.join(ProjectPath, "N4W_Task_Details.xlsx")
+
+        FileTimeDeltek = os.path.join(ProjectPath, '02-Timesheet.csv')
+        if prorate:
+            # Example paths - adjust as needed
+            output_file = os.path.join(ProjectPath, '03-Timesheet_Prorate.csv')
+
+            # Run redistribution
+            redistribute_hours_by_earning(FileTimeDeltek, PathDB_N4W_Box, output_file, database_name)
+
+            # Show comparison window and get user confirmation
+            user_approved = show_prorate_comparison_window(
+                os.path.join(ProjectPath, '02-Timesheet.csv'),
+                output_file,
+                database_name
+            )
+
+            if not user_approved:
+                print("Process cancelled by user after prorate comparison.")
+                messagebox.showinfo("Cancelled", "Deltek process cancelled by user.")
+
+                # Habilitar botones cuando el usuario cancela
+                if app_instance:
+                    app_instance.enable_all_action_buttons()
+                return
+
+            FileTimeDeltek = output_file
+            # Habilitar botones al completar exitosamente
+            if app_instance:
+                app_instance.enable_all_action_buttons()
+
+    except Exception as e:
+        messagebox.showerror("Error General", f"Error inesperado: {e}")
+        traceback.print_exc()
+
+        # Habilitar botones incluso si hay error
+        if app_instance:
+            app_instance.enable_all_action_buttons()
 
 # =============================================================================
 # AUTOMATIZACIÓN WEB - N4W FACILITY
@@ -3117,10 +2990,10 @@ def validate_complete_weeks(start_date, end_date):
 
 def validate_deltek_file_weeks(deltek_csv_path):
     """
-    Valida que las fechas en el archivo 02-Deltek.csv correspondan a semanas completas.
+    Valida que las fechas en el archivo 02-Timesheet.csv correspondan a semanas completas.
     
     Args:
-        deltek_csv_path (str): Ruta al archivo 02-Deltek.csv
+        deltek_csv_path (str): Ruta al archivo 02-Timesheet.csv
         
     Returns:
         tuple: (is_valid, error_message, file_start_date, file_end_date)
@@ -3133,7 +3006,7 @@ def validate_deltek_file_weeks(deltek_csv_path):
         date_columns = get_date_columns(df)
         
         if not date_columns:
-            return False, "No date columns found in 02-Deltek.csv file.", None, None
+            return False, "No date columns found in 02-Timesheet.csv file.", None, None
         
         # Convertir nombres de columnas a fechas y ordenar
         date_objects = []
@@ -3150,7 +3023,7 @@ def validate_deltek_file_weeks(deltek_csv_path):
                 continue
         
         if not date_objects:
-            return False, "No valid date columns found in 02-Deltek.csv file.", None, None
+            return False, "No valid date columns found in 02-Timesheet.csv file.", None, None
         
         date_objects.sort()
         file_start_date = date_objects[0]
@@ -3160,12 +3033,12 @@ def validate_deltek_file_weeks(deltek_csv_path):
         is_valid, error_msg = validate_complete_weeks(file_start_date, file_end_date)
         
         if not is_valid:
-            return False, f"02-Deltek.csv file dates are not complete weeks: {error_msg}", file_start_date, file_end_date
+            return False, f"02-Timesheet.csv file dates are not complete weeks: {error_msg}", file_start_date, file_end_date
         
         return True, "", file_start_date, file_end_date
         
     except Exception as e:
-        return False, f"Error reading 02-Deltek.csv: {str(e)}", None, None
+        return False, f"Error reading 02-Timesheet.csv: {str(e)}", None, None
 
 
 def parse_filename_dates(filename):
@@ -3446,14 +3319,14 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
         # # Actualizar base de datos
         # Update_DataBase_With_BoxFile(NameDataBase, PathDB_N4W_Box)
 
-        # Validar que el archivo 02-Deltek.csv tenga semanas completas
-        deltek_csv_path = os.path.join(ProjectPath, "02-Deltek.csv")
+        # Validar que el archivo 02-Timesheet.csv tenga semanas completas
+        deltek_csv_path = os.path.join(ProjectPath, "02-Timesheet.csv")
         file_valid, file_error, file_start, file_end = validate_deltek_file_weeks(deltek_csv_path)
 
         if not file_valid:
             messagebox.showerror(
-                "Invalid 02-Deltek.csv File",
-                f"The 02-Deltek.csv file does not contain complete weeks.\n\n{file_error}\n\n"
+                "Invalid 02-Timesheet.csv File",
+                f"The 02-Timesheet.csv file does not contain complete weeks.\n\n{file_error}\n\n"
                 f"Please regenerate the Deltek report with complete weeks (Monday to Sunday)."
             )
             # Habilitar botones antes de salir
@@ -3469,7 +3342,7 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
         if start_date != file_start_date or end_date != file_end_date:
             messagebox.showerror(
                 "Date Mismatch",
-                f"Selected dates don't match the 02-Deltek.csv file dates.\n\n"
+                f"Selected dates don't match the 02-Timesheet.csv file dates.\n\n"
                 f"Selected: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}\n"
                 f"File contains: {file_start_date.strftime('%Y-%m-%d')} to {file_end_date.strftime('%Y-%m-%d')}\n\n"
                 f"Please select the same date range as in the Deltek file."
@@ -3514,18 +3387,18 @@ def Fill_N4W(LoginID, NameDataBase, start_date, end_date, url_box="https://tnc.b
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = end_date.strftime("%Y-%m-%d")
         NameFile = f'{info["email"]}_{start_str}_to_{end_str}.xlsx'
-        CreateExcel_N4WFormat(archivo_csv=os.path.join(ProjectPath, "02-Deltek.csv"),
+        CreateExcel_N4WFormat(archivo_csv=os.path.join(ProjectPath, "02-Timesheet.csv"),
                               email_empleado=info['email'], nombre_empleado=info['name'],
                               ruta_guardado=os.path.join(ProjectPath, NameFile),
                               archivo_base_datos=PathDB_N4W_Box)
 
         # Enviar archivo a OneDrive
-        put_file_in_onedrive(
-            os.path.join(ProjectPath, NameFile),
-            fr"N4WTimeTracking - Science Timesheets\{NameFile}",
-            account_hint="The Nature Conservancy",  # o parte del nombre de la empresa
-            overwrite=True
-        )
+        # put_file_in_onedrive(
+        #     os.path.join(ProjectPath, NameFile),
+        #     fr"N4WTimeTracking - Science Timesheets\{NameFile}",
+        #     account_hint="The Nature Conservancy",  # o parte del nombre de la empresa
+        #     overwrite=True
+        # )
 
         messagebox.showinfo("Completed", "N4W Facility process successfully completed.")
 
@@ -3772,8 +3645,8 @@ class TimesheetApp:
         module3 = self.create_module_frame(parent, 3)
 
         self.create_module_header(
-            module3, "03", "Fill Deltek Timesheet",
-            "Automate filling your Deltek timesheet with meeting data"
+            module3, "03", "Timesheet for Workday",
+            "Generate a file of your hours worked using Workday coding."
         )
 
         content3 = ctk.CTkFrame(
@@ -3794,68 +3667,68 @@ class TimesheetApp:
         deltek_frame.grid_columnconfigure(4, weight=0)  # Para Prorate checkbox
         deltek_frame.grid_columnconfigure(5, weight=0)  # Para botón Fill Deltek
 
-        # ID Usuario
-        self.email_entry_deltek = ctk.CTkEntry(
-            deltek_frame,
-            width=70,
-            height=36,
-            font=ctk.CTkFont(size=13),
-            fg_color=COLORS['bg_tertiary'],
-            border_color=COLORS['border'],
-            text_color=COLORS['text_primary'],
-            placeholder_text="User ID"
-        )
-        self.email_entry_deltek.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-
-        # Contraseña
-        self.password_entry_deltek = ctk.CTkEntry(
-            deltek_frame,
-            height=36,
-            font=ctk.CTkFont(size=13),
-            fg_color=COLORS['bg_tertiary'],
-            border_color=COLORS['border'],
-            text_color=COLORS['text_primary'],
-            placeholder_text="Password",
-            show="*"
-        )
-        self.password_entry_deltek.grid(row=0, column=1, sticky="ew", padx=(6, 6))
-
-        # Posición
-        self.posi_entry_deltek = ctk.CTkEntry(
-            deltek_frame,
-            width=36,
-            height=36,
-            font=ctk.CTkFont(size=13),
-            fg_color=COLORS['bg_tertiary'],
-            border_color=COLORS['border'],
-            text_color=COLORS['text_primary'],
-            placeholder_text="Position"
-        )
-        self.posi_entry_deltek.grid(row=0, column=2, sticky="ew", padx=(6, 2))
-        self.posi_entry_deltek.insert(0, "0")
-
-        # Info icon para Position con tooltip
-        info_icon = ctk.CTkLabel(
-            deltek_frame,
-            text="ℹ️",
-            font=ctk.CTkFont(size=16),
-            text_color=COLORS['accent'],
-            cursor="hand2",
-            width=3
-        )
-        info_icon.grid(row=0, column=3, sticky="w", padx=(1, 0))
-
-        # Crear tooltip para el ícono de información
-        tooltip_text = (
-            "Pre-existing Row Position\n\n"
-            "This number indicates how many rows are already\n"
-            "occupied by projects in your Deltek timesheet\n"
-            "that cannot be deleted.\n\n"
-            "• Use 0 when the timesheet is completely empty\n"
-            "• Use 1 if there is one existing project\n"
-            "• Use 2 if there are two existing projects, etc.\n\n"
-        )
-        ToolTip(info_icon, tooltip_text)
+        # # ID Usuario
+        # self.email_entry_deltek = ctk.CTkEntry(
+        #     deltek_frame,
+        #     width=70,
+        #     height=36,
+        #     font=ctk.CTkFont(size=13),
+        #     fg_color=COLORS['bg_tertiary'],
+        #     border_color=COLORS['border'],
+        #     text_color=COLORS['text_primary'],
+        #     placeholder_text="User ID"
+        # )
+        # self.email_entry_deltek.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        #
+        # # Contraseña
+        # self.password_entry_deltek = ctk.CTkEntry(
+        #     deltek_frame,
+        #     height=36,
+        #     font=ctk.CTkFont(size=13),
+        #     fg_color=COLORS['bg_tertiary'],
+        #     border_color=COLORS['border'],
+        #     text_color=COLORS['text_primary'],
+        #     placeholder_text="Password",
+        #     show="*"
+        # )
+        # self.password_entry_deltek.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        #
+        # # Posición
+        # self.posi_entry_deltek = ctk.CTkEntry(
+        #     deltek_frame,
+        #     width=36,
+        #     height=36,
+        #     font=ctk.CTkFont(size=13),
+        #     fg_color=COLORS['bg_tertiary'],
+        #     border_color=COLORS['border'],
+        #     text_color=COLORS['text_primary'],
+        #     placeholder_text="Position"
+        # )
+        # self.posi_entry_deltek.grid(row=0, column=2, sticky="ew", padx=(6, 2))
+        # self.posi_entry_deltek.insert(0, "0")
+        #
+        # # Info icon para Position con tooltip
+        # info_icon = ctk.CTkLabel(
+        #     deltek_frame,
+        #     text="ℹ️",
+        #     font=ctk.CTkFont(size=16),
+        #     text_color=COLORS['accent'],
+        #     cursor="hand2",
+        #     width=3
+        # )
+        # info_icon.grid(row=0, column=3, sticky="w", padx=(1, 0))
+        #
+        # # Crear tooltip para el ícono de información
+        # tooltip_text = (
+        #     "Pre-existing Row Position\n\n"
+        #     "This number indicates how many rows are already\n"
+        #     "occupied by projects in your Deltek timesheet\n"
+        #     "that cannot be deleted.\n\n"
+        #     "• Use 0 when the timesheet is completely empty\n"
+        #     "• Use 1 if there is one existing project\n"
+        #     "• Use 2 if there are two existing projects, etc.\n\n"
+        # )
+        # ToolTip(info_icon, tooltip_text)
 
         # Prorate checkbox
         self.prorate_checkbox = ctk.CTkCheckBox(
@@ -3871,8 +3744,8 @@ class TimesheetApp:
         # Botón llenar Deltek
         self.fill_deltek_button = ctk.CTkButton(
             deltek_frame,
-            text="Fill Deltek",
-            command=lambda: self.fill_deltek(),
+            text="Workday",
+            command=lambda: self.fill_Workday(),
             width=90,
             height=36,
             font=ctk.CTkFont(size=13, weight="bold"),
@@ -4104,11 +3977,11 @@ class TimesheetApp:
         self.app.update_idletasks()
 
         try:
-            user_id = self.email_entry_deltek.get()
-            password = self.password_entry_deltek.get()
-            position = self.posi_entry_deltek.get()
+            user_id     = self.email_entry_deltek.get()
+            password    = self.password_entry_deltek.get()
+            position    = self.posi_entry_deltek.get()
             database_path = self.projects_database.get()
-            prorate = self.prorate_checkbox.get()
+            prorate     = self.prorate_checkbox.get()
 
             if not all([user_id, password, position, database_path]):
                 messagebox.showerror("Error", "Please complete all fields.")
@@ -4116,6 +3989,27 @@ class TimesheetApp:
                 return
 
             fill_deltek(int(position), user_id, password, database_path, prorate)
+
+        except ValueError:
+            messagebox.showerror("Error", "Position must be a number.")
+            self.enable_all_action_buttons()
+        except Exception as e:
+            messagebox.showerror("Error", f"Unexpected error: {e}")
+            self.enable_all_action_buttons()
+
+    def fill_Workday(self):
+        """Llena formularios Deltek."""
+        # Deshabilitar botones al inicio
+        self.disable_all_action_buttons()
+
+        # Forzar actualización inmediata de la UI
+        self.app.update_idletasks()
+
+        try:
+            database_path   = self.projects_database.get()
+            prorate         = self.prorate_checkbox.get()
+
+            Create_Workday_File(prorate, database_path)
 
         except ValueError:
             messagebox.showerror("Error", "Position must be a number.")
